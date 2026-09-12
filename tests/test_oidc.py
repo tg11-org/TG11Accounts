@@ -16,7 +16,24 @@ from tg11.web import app  # noqa: E402
 from tg11.cli import main as cli  # noqa: E402
 from tg11.models import Base, engine  # noqa: E402
 
-FLOWBOARD = "/home/claude/flowboard"
+
+def _find_flowboard() -> str:
+    """Where Flowboard's source lives, so its OIDC *client* can be exercised
+    against this provider.  Set FLOWBOARD_SRC to point at a checkout; the test is
+    skipped when none of the usual locations exist (it used to hard-code one
+    machine's path and simply failed everywhere else)."""
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates = [
+        os.environ.get("FLOWBOARD_SRC", ""),
+        os.path.join(os.path.dirname(here), "Vulpfin Flowboard"),
+        "/mnt/u/Projects/Vulpfin Flowboard",
+        "/var/www/Flowboard",
+        "/home/claude/flowboard",
+    ]
+    return next((p for p in candidates if p and os.path.isdir(os.path.join(p, "app", "identity"))), "")
+
+
+FLOWBOARD = _find_flowboard()
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +72,7 @@ def test_discovery_and_jwks(client):
     assert k["keys"][0]["kty"] == "RSA" and "d" not in k["keys"][0]
 
 
+@pytest.mark.skipif(not FLOWBOARD, reason="Flowboard source not found (set FLOWBOARD_SRC)")
 def test_full_code_flow_with_flowboard_client(client, capsys, monkeypatch):
     secret = _add_client(capsys, trusted=True)
     _register(client)
