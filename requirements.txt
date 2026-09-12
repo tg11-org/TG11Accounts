@@ -9,3 +9,4 @@ joserfc>=1.0,<2
 itsdangerous>=2.2,<3
 python-dotenv>=1.0,<2
 pillow>=10,<13
+httpx>=0.27
