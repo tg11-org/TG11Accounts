@@ -20,7 +20,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__, accounts, oidc
 from .config import settings
-from .models import Base, Consent, OAuthClient, Token, User, UserSession, engine, get_db, utcnow
+from .models import ApplicationIdentityLink, Base, Consent, OAuthClient, Token, User, UserSession, engine, ensure_schema, get_db, utcnow
 
 log = logging.getLogger("tg11")
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
@@ -114,6 +114,12 @@ def render(request: Request, name: str, ctx: Optional[dict] = None, status: int 
 app = FastAPI(title=settings.TG11_SITE_NAME, version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
 if not settings.is_dev:
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+app.mount("/media", StaticFiles(directory=str(settings.media_dir)), name="media")
+from .profile import router as profile_router  # noqa: E402
+
+app.include_router(profile_router)
 
 
 @app.on_event("startup")
@@ -123,7 +129,7 @@ def _startup():
 
     for attempt in range(10):  # tolerate concurrent workers initialising the sqlite file
         try:
-            Base.metadata.create_all(engine)  # small schema; alembic not needed yet
+            ensure_schema()  # create_all + add new columns (small-service migrations)
             db = SessionLocal()
             try:
                 oidc.ensure_signing_key(db)
@@ -412,20 +418,10 @@ def reset_submit(request: Request, token: str, password: str = Form(...), passwo
 def account(request: Request, db: Session = Depends(get_db), user: User = Depends(current_user)):
     sessions = list(db.scalars(select(UserSession).where(UserSession.user_id == user.id, UserSession.revoked_at.is_(None)).order_by(UserSession.last_seen_at.desc())))
     consents = list(db.scalars(select(Consent).where(Consent.user_id == user.id, Consent.revoked_at.is_(None))))
-    clients = {c.client_id: c for c in db.scalars(select(OAuthClient))}
-    return render(request, "account.html", {"sessions": sessions, "consents": consents, "clients": clients, "sid": read_sid(request)})
-
-
-@app.post("/account/profile", dependencies=[Depends(csrf_protect)])
-def account_profile(display_name: str = Form(""), username: str = Form(...), db: Session = Depends(get_db), user: User = Depends(current_user)):
-    un = accounts.norm_username(username)
-    if not accounts.USERNAME_RE.match(un):
-        return _redirect("/account?err=Invalid+username")
-    other = accounts.by_username(db, un)
-    if other is not None and other.id != user.id:
-        return _redirect("/account?err=Username+taken")
-    user.username, user.display_name = un, display_name.strip()[:80] or un
-    return _redirect("/account?msg=Profile+saved")
+    clients = {c.client_id: c for c in db.scalars(select(OAuthClient).where(OAuthClient.enabled.is_(True)))}
+    links = {l.application: l for l in db.scalars(select(ApplicationIdentityLink).where(ApplicationIdentityLink.user_id == user.id))}
+    apps = sorted(clients.values(), key=lambda c: c.name.lower())
+    return render(request, "account.html", {"sessions": sessions, "consents": consents, "clients": clients, "apps": apps, "links": links, "sid": read_sid(request), "sms_configured": settings.sms_configured})
 
 
 @app.post("/account/password", dependencies=[Depends(csrf_protect)])

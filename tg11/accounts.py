@@ -106,9 +106,10 @@ def revoke_session(db: Session, sid: str) -> None:
 
 # --- action tokens ------------------------------------------------------------
 
-def issue_action(db: Session, user: User, action: str, ttl_min: int) -> str:
+def issue_action(db: Session, user: User, action: str, ttl_min: int, payload: str = "") -> str:
     tok = generate_token(32)
-    db.add(ActionToken(user_id=user.id, action=action, token_hash=hash_token(tok), expires_at=utcnow() + timedelta(minutes=ttl_min)))
+    db.add(ActionToken(user_id=user.id, action=action, token_hash=hash_token(tok), payload=payload, expires_at=utcnow() + timedelta(minutes=ttl_min)))
+    db.flush()
     return tok
 
 

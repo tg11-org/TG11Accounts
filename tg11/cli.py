@@ -23,7 +23,9 @@ from . import accounts
 
 
 def _db():
-    Base.metadata.create_all(engine)
+    from .models import ensure_schema
+
+    ensure_schema()
     return SessionLocal()
 
 
@@ -37,8 +39,8 @@ def cmd_create_user(a):
 
 def cmd_add_client(a):
     db = _db()
-    secret = None if a.public else secrets.token_urlsafe(40)
     c = db.scalar(select(OAuthClient).where(OAuthClient.client_id == a.client_id))
+    secret = None if (a.public or (a.keep_secret and c is not None)) else secrets.token_urlsafe(40)
     if c is None:
         c = OAuthClient(client_id=a.client_id)
         db.add(c)
@@ -47,10 +49,15 @@ def cmd_add_client(a):
     c.post_logout_redirect_uris = "\n".join(a.post_logout or [])
     c.allowed_scopes = a.scopes
     c.trusted = bool(a.trusted)
-    c.client_secret_hash = hash_password(secret) if secret else None
+    if a.home_url is not None: c.home_url = a.home_url
+    if a.link_url is not None: c.link_url = a.link_url
+    if a.icon is not None: c.icon = a.icon
+    if a.description is not None: c.description = a.description
+    if secret or c.client_secret_hash is None or not a.keep_secret:
+        c.client_secret_hash = hash_password(secret) if secret else None
     db.commit()
     print(f"client_id={c.client_id}")
-    print(f"client_secret={secret or '(public client, PKCE only)'}")
+    print(f"client_secret={secret or ('(unchanged)' if a.keep_secret else '(public client, PKCE only)')}")
 
 
 def cmd_list_clients(_a):
@@ -84,7 +91,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(prog="tg11")
     s = p.add_subparsers(dest="cmd", required=True)
     x = s.add_parser("create-user"); x.add_argument("--email", required=True); x.add_argument("--username", required=True); x.add_argument("--password"); x.add_argument("--display-name", dest="display_name"); x.add_argument("--staff", action="store_true"); x.set_defaults(fn=cmd_create_user)
-    x = s.add_parser("add-client"); x.add_argument("--client-id", dest="client_id", required=True); x.add_argument("--name", required=True); x.add_argument("--application", required=True); x.add_argument("--redirect", action="append", required=True); x.add_argument("--post-logout", dest="post_logout", action="append"); x.add_argument("--scopes", default="openid profile email"); x.add_argument("--trusted", action="store_true"); x.add_argument("--public", action="store_true"); x.set_defaults(fn=cmd_add_client)
+    x = s.add_parser("add-client"); x.add_argument("--client-id", dest="client_id", required=True); x.add_argument("--name", required=True); x.add_argument("--application", required=True); x.add_argument("--redirect", action="append", required=True); x.add_argument("--post-logout", dest="post_logout", action="append"); x.add_argument("--scopes", default="openid profile email"); x.add_argument("--trusted", action="store_true"); x.add_argument("--public", action="store_true"); x.add_argument("--keep-secret", dest="keep_secret", action="store_true", help="update metadata without rotating the secret"); x.add_argument("--home-url", dest="home_url"); x.add_argument("--link-url", dest="link_url", help="URL where the app starts 'link my TG11 account'"); x.add_argument("--icon"); x.add_argument("--description"); x.set_defaults(fn=cmd_add_client)
     s.add_parser("list-clients").set_defaults(fn=cmd_list_clients)
     x = s.add_parser("rotate-secret"); x.add_argument("--client-id", dest="client_id", required=True); x.set_defaults(fn=cmd_rotate_secret)
     x = s.add_parser("link"); x.add_argument("--user", required=True); x.add_argument("--application", required=True); x.add_argument("--legacy-id", dest="legacy_id", required=True); x.add_argument("--local-uuid", dest="local_uuid"); x.add_argument("--federation"); x.set_defaults(fn=cmd_link)

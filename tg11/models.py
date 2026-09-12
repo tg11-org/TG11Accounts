@@ -45,7 +45,27 @@ class User(Base):
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+    # profile (public-ish; exposed through the `profile` / `phone` scopes)
+    bio: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    website: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    avatar_path: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    header_path: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    phone: Mapped[str] = mapped_column(String(32), default="", nullable=False)  # E.164
+    phone_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    pending_email: Mapped[str] = mapped_column(String(254), default="", nullable=False)
     # reserved for future MFA: totp_secret (encrypted), passkeys live in their own tables later
+
+    @property
+    def avatar_url(self) -> str:
+        from .config import settings as _s
+
+        return f"{_s.issuer}/media/{self.avatar_path}" if self.avatar_path else ""
+
+    @property
+    def header_url(self) -> str:
+        from .config import settings as _s
+
+        return f"{_s.issuer}/media/{self.header_path}" if self.header_path else ""
 
     @property
     def email_verified(self) -> bool:
@@ -71,8 +91,9 @@ class ActionToken(Base):
     __tablename__ = "action_tokens"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    action: Mapped[str] = mapped_column(String(32), nullable=False)  # verify_email|reset_password
+    action: Mapped[str] = mapped_column(String(32), nullable=False)  # verify_email|reset_password|change_email|verify_phone
     token_hash: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    payload: Mapped[str] = mapped_column(Text, default="", nullable=False)  # e.g. the new email address
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
@@ -91,6 +112,10 @@ class OAuthClient(Base):
     trusted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)  # first-party: skip consent screen
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    home_url: Mapped[str] = mapped_column(String(300), default="", nullable=False)
+    link_url: Mapped[str] = mapped_column(String(300), default="", nullable=False)  # where the app starts "link my TG11 account"
+    icon: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    description: Mapped[str] = mapped_column(String(300), default="", nullable=False)
 
     @property
     def redirect_uri_list(self):
@@ -164,6 +189,66 @@ class ApplicationIdentityLink(Base):
     linked_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
+class AIVaultCredential(Base):
+    """Central BYO AI key vault: one encrypted secret blob per (user, provider).
+    Trusted apps with the `tg11.ai` scope can fetch a user's keys."""
+
+    __tablename__ = "ai_vault_credentials"
+    __table_args__ = (UniqueConstraint("user_id", "provider", name="uq_vault_user_provider"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    label: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    secret_blob: Mapped[bytes] = mapped_column(nullable=False)
+    key_version: Mapped[int] = mapped_column(default=1, nullable=False)
+    secret_hint: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    config_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class PaymentMethod(Base):
+    """A user's stored way to pay, held by an external provider (we store only references)."""
+
+    __tablename__ = "payment_methods"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)  # stripe|paypal|venmo|cashapp|airwallex|adyen|btc|eth|tg11coin|foxpay
+    kind: Mapped[str] = mapped_column(String(16), default="card", nullable=False)  # card|wallet|bank|crypto
+    label: Mapped[str] = mapped_column(String(80), default="", nullable=False)  # "Visa •••• 4242"
+    external_customer_id: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    external_method_id: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="active", nullable=False)  # pending|active|removed|error
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    meta_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class PaymentHold(Base):
+    """An authorization placed by an application (e.g. FreeParty) against a
+    user's payment method. Amounts are integer minor units (cents/sats)."""
+
+    __tablename__ = "payment_holds"
+    __table_args__ = (Index("ix_holds_user", "user_id"), Index("ix_holds_client", "client_id"))
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    client_id: Mapped[str] = mapped_column(String(64), nullable=False)  # requesting application
+    method_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    amount: Mapped[int] = mapped_column(nullable=False)
+    currency: Mapped[str] = mapped_column(String(8), default="usd", nullable=False)
+    captured_amount: Mapped[int] = mapped_column(default=0, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="requested", nullable=False)  # requested|authorized|captured|released|failed|expired
+    reference: Mapped[str] = mapped_column(String(120), default="", nullable=False)  # app-side reference (order id...)
+    description: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    external_id: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    error: Mapped[str] = mapped_column(String(300), default="", nullable=False)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
 class SigningKey(Base):
     __tablename__ = "signing_keys"
     kid: Mapped[str] = mapped_column(String(32), primary_key=True)
@@ -188,6 +273,29 @@ def _engine(url: str):
 
 engine = _engine(settings.database_url)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
+
+
+def ensure_schema() -> None:
+    """create_all + add columns that exist on the models but not in the db
+    (sqlite ALTER TABLE ADD COLUMN) - small-service migration strategy."""
+    from sqlalchemy import inspect, text
+
+    Base.metadata.create_all(engine)
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            existing = {c["name"] for c in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name in existing:
+                    continue
+                ctype = col.type.compile(engine.dialect)
+                default = col.default.arg if col.default is not None and not callable(col.default.arg) else None
+                ddl = f'ALTER TABLE {table.name} ADD COLUMN {col.name} {ctype}'
+                if default is not None:
+                    ddl += f" DEFAULT {repr(default) if isinstance(default, str) else (1 if default is True else 0 if default is False else default)}"
+                elif not col.nullable:
+                    ddl += " DEFAULT ''" if "CHAR" in ctype or "TEXT" in ctype else " DEFAULT 0"
+                conn.execute(text(ddl))
 
 
 def get_db():

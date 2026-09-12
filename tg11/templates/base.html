@@ -15,9 +15,15 @@ button,.btn{font:inherit;cursor:pointer;padding:.55rem .8rem;border-radius:.6rem
 .muted{color:var(--muted)}.small{font-size:.85rem}.row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center}
 table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:.4rem .5rem;border-bottom:1px solid var(--line);vertical-align:top}
 ul.scopes{padding-left:1.2rem}code{background:#0b1021;padding:.05rem .3rem;border-radius:.3rem}
+.btn.small{padding:.3rem .6rem;font-size:.85rem}.header{height:160px;border-radius:1rem;background:#141a3a center/cover no-repeat;border:1px solid var(--line)}
+.avatar{width:96px;height:96px;border-radius:50%;object-fit:cover;border:3px solid var(--bg);background:#141a3a;margin-top:-48px;margin-left:1rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:.6rem}.app{border:1px solid var(--line);border-radius:.8rem;padding:.7rem;background:var(--card)}
+.tag{display:inline-block;font-size:.72rem;padding:.1rem .45rem;border-radius:.5rem;background:#1c2350;color:#cfe7ff}.tag.ok{background:#124b3c;color:#b8ffe9}.tag.bad{background:#5a1f2a;color:#ffd0d6}
+textarea{padding:.55rem .65rem;border:1px solid var(--line);background:#0b1021;color:var(--text);border-radius:.6rem;font:inherit;width:100%}
+input[type=file]{padding:.3rem}
 </style></head>
 <body><div class="wrap {% block wrapclass %}{% endblock %}">
-<p><a class="brand" href="/">TG11 Account</a>{% if user %} <span class="muted small">· signed in as {{ user.username }}</span>{% endif %}</p>
+<p class="row"><a class="brand" href="/">TG11 Account</a>{% if user %} <span class="muted small">· {{ user.username }}</span> <span style="flex:1"></span><a class="btn small" href="/account">Account</a> <a class="btn small" href="/wallet">Wallet</a> <a class="btn small" href="/vault">AI keys</a>{% endif %}</p>
 {% if msg %}<div class="flash ok">{{ msg }}</div>{% endif %}{% if err %}<div class="flash bad">{{ err }}</div>{% endif %}
 {% block content %}{% endblock %}
 <p class="muted small">TG11 Accounts {{ version }} · one identity for TG11 &amp; VulpFin services</p>

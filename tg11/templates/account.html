@@ -1,17 +1,65 @@
 {% extends "base.html" %}{% block wrapclass %}wide{% endblock %}{% block title %}Your TG11 account{% endblock %}{% block content %}
-<div class="panel"><h1>Your TG11 account</h1>
-<p class="small">TG11 user ID <code>{{ user.id }}</code> · {{ user.email }} {% if user.email_verified %}<span class="muted">(verified)</span>{% else %}<span class="muted">(not verified)</span>{% endif %} · state {{ user.state }} · member since {{ user.created_at.strftime('%Y-%m-%d') }}</p>
-<form method="post" action="/account/profile" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-<label>Username <input name="username" value="{{ user.username }}"></label><label>Display name <input name="display_name" value="{{ user.display_name }}"></label><button type="submit">Save</button></form></div>
+<div class="panel" style="padding:0;overflow:hidden">
+  <div class="header" style="{% if user.header_path %}background-image:url('/media/{{ user.header_path }}'){% endif %}"></div>
+  <div style="padding:0 1.25rem 1rem">
+    {% if user.avatar_path %}<img class="avatar" src="/media/{{ user.avatar_path }}" alt="">{% else %}<div class="avatar" style="display:flex;align-items:center;justify-content:center;font-size:2rem">{{ (user.display_name or user.username)[:1]|upper }}</div>{% endif %}
+    <h1 style="margin:.4rem 0 .1rem">{{ user.display_name or user.username }} <span class="muted small">@{{ user.username }}</span></h1>
+    {% if user.bio %}<p style="margin:.2rem 0;white-space:pre-wrap">{{ user.bio }}</p>{% endif %}
+    <p class="small muted">TG11 ID <code>{{ user.id }}</code> · member since {{ user.created_at.strftime('%Y-%m-%d') }} · state {{ user.state }}</p>
+    <div class="row">
+      <form method="post" action="/account/avatar" enctype="multipart/form-data" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Profile image <input type="file" name="file" accept="image/*" required></label><button type="submit">Upload</button></form>
+      <form method="post" action="/account/header" enctype="multipart/form-data" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Header image <input type="file" name="file" accept="image/*" required></label><button type="submit">Upload</button></form>
+      {% if user.avatar_path %}<form method="post" action="/account/images/avatar/remove"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="small">Remove avatar</button></form>{% endif %}
+      {% if user.header_path %}<form method="post" action="/account/images/header/remove"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="small">Remove header</button></form>{% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="panel"><h2>Profile</h2>
+<form method="post" action="/account/profile" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<div class="row"><label>Username <input name="username" value="{{ user.username }}" pattern="[a-z0-9_.]{3,30}"></label><label>Display name <input name="display_name" value="{{ user.display_name }}"></label><label>Website <input name="website" value="{{ user.website }}" placeholder="https://"></label></div>
+<label>Bio <textarea name="bio" rows="3" maxlength="1000">{{ user.bio }}</textarea></label>
+<button type="submit" class="primary">Save profile</button></form></div>
+
+<div class="panel"><h2>Email</h2>
+<p><b>{{ user.email }}</b> {% if user.email_verified %}<span class="tag ok">verified</span>{% else %}<span class="tag bad">not verified</span> <form method="post" action="/account/email/resend-verification" style="display:inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="small">Resend verification</button></form>{% endif %}</p>
+{% if user.pending_email %}<p class="small">Change to <b>{{ user.pending_email }}</b> pending — check that inbox for the confirmation link. <form method="post" action="/account/email/cancel" style="display:inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="small">Cancel</button></form></p>{% endif %}
+<form method="post" action="/account/email" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>New email <input name="new_email" type="email" required></label>{% if user.password_hash %}<label>Current password <input name="password" type="password" autocomplete="current-password" required></label>{% endif %}<button type="submit">Request change</button></form>
+<p class="muted small">The change only takes effect after you open the link we send to the new address; the old address is notified.</p></div>
+
+<div class="panel"><h2>Phone</h2>
+{% if user.phone %}<p><b>{{ user.phone }}</b> {% if user.phone_verified_at %}<span class="tag ok">verified</span>{% else %}<span class="tag bad">not verified</span>{% endif %}
+<form method="post" action="/account/phone/remove" style="display:inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="small">Remove</button></form></p>
+{% if not user.phone_verified_at and sms_configured %}<form method="post" action="/account/phone/verify" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Code from SMS <input name="code" inputmode="numeric" pattern="[0-9]{6}" required></label><button type="submit">Verify</button></form>{% endif %}
+{% endif %}
+<form method="post" action="/account/phone" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>{{ 'Change number' if user.phone else 'Phone number' }} <input name="phone" type="tel" placeholder="+1 555 123 4567" required></label><button type="submit">{{ 'Send code' if sms_configured else 'Save' }}</button></form>
+{% if not sms_configured %}<p class="muted small">SMS verification will switch on automatically once a Twilio number is configured on the server.</p>{% endif %}</div>
+
+<div class="panel"><h2>Your TG11 apps</h2>
+<div class="grid">
+{% for c in apps %}
+<div class="app"><b>{{ c.icon }} {{ c.name }}</b>{% if c.description %}<div class="muted small">{{ c.description }}</div>{% endif %}
+<div class="row" style="margin-top:.4rem">
+{% if c.application in links %}<span class="tag ok">linked</span>{% if c.home_url %}<a class="btn small" href="{{ c.home_url }}">Open</a>{% endif %}
+{% elif c.link_url %}<a class="btn small primary" href="{{ c.link_url }}">Link my account</a>
+{% elif c.home_url %}<a class="btn small" href="{{ c.home_url }}">Open</a> <span class="muted small">linking coming soon</span>
+{% else %}<span class="muted small">coming soon</span>{% endif %}
+</div></div>
+{% else %}<p class="muted">No applications registered yet.</p>{% endfor %}
+</div>
+<p class="muted small" style="margin-top:.6rem">Wallet &amp; payment holds: <a href="/wallet">manage</a> · AI provider keys shared with your apps: <a href="/vault">manage</a></p></div>
+
 <div class="panel"><h2>Password</h2><form method="post" action="/account/password" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 {% if user.password_hash %}<label>Current <input name="current_password" type="password" autocomplete="current-password"></label>{% endif %}
 <label>New <input name="new_password" type="password" minlength="10" autocomplete="new-password"></label><label>Repeat <input name="new_password2" type="password" minlength="10" autocomplete="new-password"></label><button type="submit">Change</button></form></div>
-<div class="panel"><h2>Connected applications</h2>
+
+<div class="panel"><h2>Authorised applications</h2>
 <table><tr><th>Application</th><th>Access</th><th>Since</th><th></th></tr>
-{% for c in consents %}<tr><td>{{ clients[c.client_id].name if c.client_id in clients else c.client_id }}</td><td class="small">{{ c.scope }}</td><td class="small">{{ c.granted_at.strftime('%Y-%m-%d') }}</td><td><form method="post" action="/account/consents/{{ c.client_id }}/revoke"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="danger">Revoke</button></form></td></tr>
-{% else %}<tr><td colspan="4" class="muted">No applications authorised yet (first-party apps like Flowboard don't need consent).</td></tr>{% endfor %}</table></div>
+{% for c in consents %}<tr><td>{{ clients[c.client_id].name if c.client_id in clients else c.client_id }}</td><td class="small">{{ c.scope }}</td><td class="small">{{ c.granted_at.strftime('%Y-%m-%d') }}</td><td><form method="post" action="/account/consents/{{ c.client_id }}/revoke"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="danger small">Revoke</button></form></td></tr>
+{% else %}<tr><td colspan="4" class="muted">Only first-party TG11 apps have access (they don't need consent).</td></tr>{% endfor %}</table></div>
+
 <div class="panel"><h2>Sessions</h2>
 <table><tr><th>Started</th><th>Last seen</th><th>IP</th><th>Agent</th><th></th></tr>
-{% for s in sessions %}<tr><td class="small">{{ s.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td class="small">{{ s.last_seen_at.strftime('%Y-%m-%d %H:%M') }}</td><td class="small">{{ s.ip_address }}</td><td class="small muted">{{ s.user_agent[:50] }}</td><td>{% if s.id == sid %}<span class="muted small">this session</span>{% else %}<form method="post" action="/account/sessions/{{ s.id }}/revoke"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Revoke</button></form>{% endif %}</td></tr>{% endfor %}</table>
+{% for s in sessions %}<tr><td class="small">{{ s.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td class="small">{{ s.last_seen_at.strftime('%Y-%m-%d %H:%M') }}</td><td class="small">{{ s.ip_address }}</td><td class="small muted">{{ s.user_agent[:50] }}</td><td>{% if s.id == sid %}<span class="muted small">this session</span>{% else %}<form method="post" action="/account/sessions/{{ s.id }}/revoke"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="small">Revoke</button></form>{% endif %}</td></tr>{% endfor %}</table>
 <form method="post" action="/logout" style="margin-top:.8rem"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Sign out</button></form></div>
 {% endblock %}

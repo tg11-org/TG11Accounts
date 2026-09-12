@@ -23,7 +23,7 @@ from .models import AuthorizationCode, Consent, OAuthClient, SigningKey, Token, 
 from .passwords import verify_password
 from .tokens import generate_token, hash_token
 
-SUPPORTED_SCOPES = ["openid", "profile", "email", "tg11.profile", "offline_access"]
+SUPPORTED_SCOPES = ["openid", "profile", "email", "phone", "tg11.profile", "tg11.ai", "tg11.payments", "offline_access"]
 
 
 class OAuthError(Exception):
@@ -78,7 +78,7 @@ def discovery() -> Dict:
         "id_token_signing_alg_values_supported": ["RS256"],
         "scopes_supported": SUPPORTED_SCOPES,
         "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none"],
-        "claims_supported": ["sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "email", "email_verified", "preferred_username", "name", "tg11_username", "account_state", "created_at"],
+        "claims_supported": ["sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "email", "email_verified", "preferred_username", "name", "picture", "website", "phone_number", "phone_number_verified", "tg11_username", "tg11_bio", "tg11_header_image", "account_state", "created_at"],
         "code_challenge_methods_supported": ["S256"],
         "claims_parameter_supported": False,
         "request_parameter_supported": False,
@@ -195,9 +195,16 @@ def user_claims(user: User, scopes: List[str]) -> Dict:
     if "profile" in scopes:
         claims["preferred_username"] = user.username
         claims["name"] = user.display_name or user.username
+        claims["picture"] = user.avatar_url or None
+        claims["website"] = user.website or None
         claims["updated_at"] = int(user.updated_at.timestamp()) if user.updated_at else None
+    if "phone" in scopes and user.phone:
+        claims["phone_number"] = user.phone
+        claims["phone_number_verified"] = user.phone_verified_at is not None
     if "tg11.profile" in scopes:
         claims["tg11_username"] = user.username
+        claims["tg11_bio"] = user.bio or None
+        claims["tg11_header_image"] = user.header_url or None
         claims["account_state"] = user.state
         claims["created_at"] = user.created_at.isoformat() + "Z"
     return {k: v for k, v in claims.items() if v is not None}

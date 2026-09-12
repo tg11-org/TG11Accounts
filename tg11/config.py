@@ -31,6 +31,20 @@ class Settings(BaseSettings):
     TG11_REFRESH_TOKEN_TTL: int = 60 * 60 * 24 * 30
     TG11_CODE_TTL: int = 600
     TG11_COOKIE_SECURE: bool = True
+    TG11_VAULT_KEY: str = ""  # AES-256-GCM key for the AI key vault (base64/hex 32 bytes)
+    TG11_MEDIA_DIR: str = ""  # uploaded avatars/headers (default <data>/media)
+    TG11_MAX_UPLOAD_BYTES: int = 8 * 1024 * 1024
+    # SMS verification (Twilio Messages API)
+    TWILIO_ACCOUNT_SID: str = ""
+    TWILIO_AUTH_TOKEN: str = ""
+    TWILIO_FROM_NUMBER: str = ""
+    # Payments: Stripe (cards, Link). Others are registered as planned providers until keys exist.
+    STRIPE_SECRET_KEY: str = ""
+    STRIPE_PUBLISHABLE_KEY: str = ""
+    STRIPE_WEBHOOK_SECRET: str = ""
+    PAYPAL_CLIENT_ID: str = ""
+    PAYPAL_CLIENT_SECRET: str = ""
+    PAYPAL_ENV: str = "sandbox"
     SMTP_HOST: str = ""
     SMTP_PORT: int = 587
     SMTP_USER: str = ""
@@ -47,6 +61,20 @@ class Settings(BaseSettings):
     @property
     def database_url(self) -> str:
         return self.TG11_DATABASE_URL or f"sqlite:///{self.data_dir / 'accounts.sqlite3'}"
+
+    @property
+    def media_dir(self) -> Path:
+        p = Path(self.TG11_MEDIA_DIR) if self.TG11_MEDIA_DIR else self.data_dir / "media"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    @property
+    def sms_configured(self) -> bool:
+        return bool(self.TWILIO_ACCOUNT_SID and self.TWILIO_AUTH_TOKEN and self.TWILIO_FROM_NUMBER)
+
+    @property
+    def stripe_configured(self) -> bool:
+        return bool(self.STRIPE_SECRET_KEY and self.STRIPE_PUBLISHABLE_KEY)
 
     @property
     def issuer(self) -> str:

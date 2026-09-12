@@ -1,0 +1,18 @@
+{% extends "base.html" %}{% block title %}Add {{ provider.name }}{% endblock %}{% block content %}
+<div class="panel"><h1>Add {{ provider.name }}</h1>
+{% if setup.mode == 'stripe_elements' %}
+<form id="pay-form" class="stack"><div id="payment-element"></div><button id="submit" class="primary" type="submit">Save payment method</button><div id="pay-error" class="flash bad" hidden></div></form>
+<script src="https://js.stripe.com/v3/"></script>
+<script>
+const stripe = Stripe({{ setup.publishable_key|tojson }});
+const elements = stripe.elements({clientSecret: {{ setup.client_secret|tojson }}, appearance:{theme:'night'}});
+elements.create('payment').mount('#payment-element');
+document.getElementById('pay-form').addEventListener('submit', async (e) => {
+  e.preventDefault(); document.getElementById('submit').disabled = true;
+  const {error} = await stripe.confirmSetup({elements, confirmParams:{return_url: {{ (issuer ~ '/wallet/stripe/complete')|tojson }}}});
+  if (error) { const el = document.getElementById('pay-error'); el.textContent = error.message; el.hidden = false; document.getElementById('submit').disabled = false; }
+});
+</script>
+{% else %}<p class="muted">This provider does not have an interactive setup yet.</p>{% endif %}
+<p class="muted small"><a href="/wallet">Back to wallet</a></p></div>
+{% endblock %}

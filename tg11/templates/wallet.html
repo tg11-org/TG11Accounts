@@ -1,0 +1,20 @@
+{% extends "base.html" %}{% block wrapclass %}wide{% endblock %}{% block title %}Wallet · TG11{% endblock %}{% block content %}
+<div class="panel"><h1>Wallet</h1>
+<p class="muted small">Saved ways to pay, stored with the provider you choose — TG11 keeps only references, never card numbers. Apps like FreeParty can place a <b>hold</b> (an authorisation you can see below) only if you granted them the "payments" permission.</p>
+<h2>Your payment methods</h2>
+<table><tr><th>Method</th><th>Provider</th><th>Status</th><th></th></tr>
+{% for m in methods %}<tr><td>{{ m.label }}{% if m.is_default %} <span class="tag ok">default</span>{% endif %}</td><td>{{ m.provider }}</td><td>{{ m.status }}</td><td class="row">
+{% if not m.is_default %}<form method="post" action="/wallet/methods/{{ m.id }}/default"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="small">Make default</button></form>{% endif %}
+<form method="post" action="/wallet/methods/{{ m.id }}/remove" onsubmit="return confirm('Remove this payment method?')"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="danger small">Remove</button></form></td></tr>
+{% else %}<tr><td colspan="4" class="muted">No payment methods yet.</td></tr>{% endfor %}</table></div>
+<div class="panel"><h2>Add a payment method</h2>
+<div class="grid">{% for p in providers %}
+<div class="app"><b>{{ p.name }}</b> <span class="tag {{ 'ok' if p.status == 'available' else '' }}">{{ p.status|replace('_',' ') }}</span>{% if not p.supports_holds %} <span class="tag" title="Charges only; cannot place holds">no holds</span>{% endif %}
+<div class="muted small" style="margin:.3rem 0">{{ p.notes }}</div>
+{% if p.status == 'available' %}<form method="post" action="/wallet/add/{{ p.id }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="primary small">Add</button></form>{% endif %}
+</div>{% endfor %}</div></div>
+<div class="panel"><h2>Holds</h2>
+<table><tr><th>When</th><th>App</th><th>Amount</th><th>Status</th><th>Reference</th></tr>
+{% for h in holds %}<tr><td class="small">{{ h.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ clients[h.client_id].name if h.client_id in clients else h.client_id }}</td><td>{{ '%.2f'|format(h.amount/100) }} {{ h.currency|upper }}{% if h.captured_amount %} (captured {{ '%.2f'|format(h.captured_amount/100) }}){% endif %}</td><td><span class="tag {{ 'ok' if h.status in ('authorized','captured') else ('bad' if h.status == 'failed' else '') }}">{{ h.status }}</span>{% if h.error %} <span class="muted small">{{ h.error }}</span>{% endif %}</td><td class="small">{{ h.description or h.reference }}</td></tr>
+{% else %}<tr><td colspan="5" class="muted">No holds.</td></tr>{% endfor %}</table></div>
+{% endblock %}
