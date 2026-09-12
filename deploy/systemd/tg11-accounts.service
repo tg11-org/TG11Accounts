@@ -8,7 +8,7 @@ Group=tg11accounts
 WorkingDirectory=/var/www/TG11Accounts
 EnvironmentFile=/var/www/TG11Accounts/.env
 Environment="PYTHONUNBUFFERED=1"
-ExecStart=/var/www/TG11Accounts/.venv/bin/uvicorn tg11.web:app --host 127.1.0.5 --port 8000 --workers 2 --proxy-headers --forwarded-allow-ips=127.0.0.1
+ExecStart=/var/www/TG11Accounts/.venv/bin/uvicorn tg11.web:app --host 127.1.0.5 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
 Restart=always
 RestartSec=3
 NoNewPrivileges=true

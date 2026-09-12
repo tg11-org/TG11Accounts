@@ -118,15 +118,24 @@ if not settings.is_dev:
 
 @app.on_event("startup")
 def _startup():
-    Base.metadata.create_all(engine)  # small schema; alembic not needed yet
+    import time as _t
     from .models import SessionLocal
 
-    db = SessionLocal()
-    try:
-        oidc.ensure_signing_key(db)
-        db.commit()
-    finally:
-        db.close()
+    for attempt in range(10):  # tolerate concurrent workers initialising the sqlite file
+        try:
+            Base.metadata.create_all(engine)  # small schema; alembic not needed yet
+            db = SessionLocal()
+            try:
+                oidc.ensure_signing_key(db)
+                db.commit()
+            finally:
+                db.close()
+            return
+        except Exception as exc:  # pragma: no cover - startup race
+            if attempt == 9:
+                raise
+            log.warning("startup retry %s: %s", attempt + 1, exc)
+            _t.sleep(0.5 * (attempt + 1))
 
 
 @app.middleware("http")
