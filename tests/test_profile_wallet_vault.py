@@ -113,6 +113,15 @@ def test_vault_and_api(client, capsys):
     assert creds[0]["provider"] == "openai" and creds[0]["secrets"]["api_key"] == "sk-proj-vaultkey1234"
     me = client.get("/api/v1/me", headers={"Authorization": f"Bearer {tok['access_token']}"}).json()
     assert me["preferred_username"] == "alice"
+    # app pushes keys back into the vault (reverse sync)
+    r = client.put("/api/v1/ai/credentials", json={"credentials": [{"provider": "anthropic", "secrets": {"api_key": "sk-ant-pushed"}, "config": {"base_url": "https://x"}}, {"provider": "bad provider!", "secrets": {"api_key": "x"}}, {"provider": "openai", "secrets": {}}]}, headers={"Authorization": f"Bearer {tok['access_token']}"})
+    assert r.status_code == 200 and r.json()["written"] == ["anthropic"] and set(r.json()["skipped"]) == {"bad provider!", "openai"}
+    creds = {c["provider"]: c for c in client.get("/api/v1/ai/credentials", headers={"Authorization": f"Bearer {tok['access_token']}"}).json()["credentials"]}
+    assert creds["anthropic"]["secrets"]["api_key"] == "sk-ant-pushed" and creds["anthropic"]["config"]["base_url"] == "https://x" and creds["anthropic"]["source"] == "flowboard"
+    assert creds["openai"]["secrets"]["api_key"] == "sk-proj-vaultkey1234"  # untouched by a partial push
+    assert "from flowboard" in client.get("/vault").text
+    r = client.put("/api/v1/ai/credentials", json={"credentials": [{"provider": "anthropic", "secrets": {"api_key": "sk-ant-2"}}], "replace": True}, headers={"Authorization": f"Bearer {tok['access_token']}"})
+    assert r.json()["removed"] == ["openai"]
     # link registration by the app
     r = client.post("/api/v1/links", json={"sub": me["sub"], "legacy_id": "fb-user-1"}, auth=("flowboard", secret))
     assert r.status_code == 200

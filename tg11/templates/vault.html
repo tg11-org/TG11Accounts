@@ -3,7 +3,7 @@
 <p class="muted small">Store your own API keys once; trusted TG11 apps (Flowboard today) can pull them with your permission instead of asking for each key again. Keys are encrypted at rest (AES-256-GCM) and never shown again.</p>
 {% if not vault_ready %}<div class="flash bad">The vault encryption key is not configured on this server yet (TG11_VAULT_KEY).</div>{% endif %}
 <table><tr><th>Provider</th><th>Key</th><th>Base URL</th><th>Updated</th><th></th></tr>
-{% for r in rows %}<tr><td><b>{{ r.provider }}</b>{% if r.label %} <span class="muted small">{{ r.label }}</span>{% endif %}</td><td><code>{{ r.secret_hint }}</code></td><td class="small">{{ r.config_json }}</td><td class="small">{{ r.updated_at.strftime('%Y-%m-%d') }}</td><td><form method="post" action="/vault/{{ r.provider }}/delete"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="danger small">Remove</button></form></td></tr>
+{% for r in rows %}<tr><td><b>{{ r.provider }}</b>{% if r.label %} <span class="muted small">{{ r.label }}</span>{% endif %}</td><td><code>{{ r.secret_hint }}</code></td><td class="small">{{ r.config_json }}</td><td class="small">{{ r.updated_at.strftime('%Y-%m-%d') }}{% if r.source and r.source != 'tg11' %} · via {{ r.source }}{% endif %}</td><td><form method="post" action="/vault/{{ r.provider }}/delete"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="danger small">Remove</button></form></td></tr>
 {% else %}<tr><td colspan="5" class="muted">No keys stored.</td></tr>{% endfor %}</table></div>
 <div class="panel"><h2>Add / replace a key</h2>
 <form method="post" action="/vault" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">

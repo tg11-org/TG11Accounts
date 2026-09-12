@@ -203,6 +203,7 @@ class AIVaultCredential(Base):
     key_version: Mapped[int] = mapped_column(default=1, nullable=False)
     secret_hint: Mapped[str] = mapped_column(String(32), default="", nullable=False)
     config_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    source: Mapped[str] = mapped_column(String(40), default="tg11", nullable=False)  # "tg11" (entered here) or the app that pushed it
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 

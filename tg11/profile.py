@@ -314,6 +314,26 @@ def api_ai_credentials(request: Request, db: Session = Depends(get_db)):
     return JSONResponse({"credentials": vault.export_for_app(db, user)})
 
 
+@router.put("/api/v1/ai/credentials")
+async def api_ai_credentials_put(request: Request, db: Session = Depends(get_db)):
+    """A trusted app pushes the user's keys into the vault.  Body:
+    {"credentials": [{"provider", "label", "secrets": {...}, "config": {...}}], "replace": false}"""
+    user, _tok, client = _bearer_user(request, db, "tg11.ai")
+    if client is None or not client.trusted:
+        raise oidc.OAuthError("insufficient_scope", "only trusted first-party applications may write the vault", 403)
+    try:
+        body = await request.json()
+    except Exception:
+        raise oidc.OAuthError("invalid_request", "JSON body required")
+    items = body.get("credentials") if isinstance(body, dict) else None
+    if not isinstance(items, list):
+        raise oidc.OAuthError("invalid_request", "credentials must be a list")
+    if len(items) > 50:
+        raise oidc.OAuthError("invalid_request", "too many credentials")
+    res = vault.import_from_app(db, user, client.application, items, replace=bool(body.get("replace")))
+    return JSONResponse({"ok": True, **res})
+
+
 def _client_from_basic(request: Request, db: Session) -> OAuthClient:
     import base64
 
