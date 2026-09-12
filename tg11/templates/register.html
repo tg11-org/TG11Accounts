@@ -1,0 +1,12 @@
+{% extends "base.html" %}{% block title %}Create account · {{ site_name }}{% endblock %}{% block content %}
+<div class="panel"><h1>Create your TG11 account</h1><p class="muted small">One account for Flowboard, FreeParty, Shop and other TG11 / VulpFin services.</p>
+{% if error %}<div class="flash bad">{{ error }}</div>{% endif %}
+<form method="post" action="/register" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="next" value="{{ next }}">
+<label>Email <input name="email" type="email" value="{{ email or '' }}" required autocomplete="email"></label>
+<label>Username <input name="username" value="{{ username or '' }}" required pattern="[a-z0-9_.]{3,30}" autocomplete="username"></label>
+<label>Display name <input name="display_name" value="{{ display_name or '' }}" autocomplete="name"></label>
+<label>Password <input name="password" type="password" minlength="10" required autocomplete="new-password"></label>
+<label>Repeat password <input name="password2" type="password" minlength="10" required autocomplete="new-password"></label>
+<button class="primary" type="submit">Create account</button></form>
+<p class="muted small">Already have one? <a href="/login?next={{ next|urlencode }}">Sign in</a></p></div>
+{% endblock %}

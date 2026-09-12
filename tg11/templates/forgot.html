@@ -1,0 +1,4 @@
+{% extends "base.html" %}{% block content %}<div class="panel"><h1>Reset your password</h1>
+{% if sent %}<p>If an account exists for that address, a reset link is on its way (valid 60 minutes).</p>{% else %}
+<form method="post" action="/password/forgot" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Email <input name="email" type="email" required autofocus></label><button class="primary">Send reset link</button></form>{% endif %}
+<p class="muted small"><a href="/login">Back to sign in</a></p></div>{% endblock %}

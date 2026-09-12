@@ -1,0 +1,2 @@
+{% extends "base.html" %}{% block content %}<div class="panel"><h1>Choose a new password</h1>{% if error %}<div class="flash bad">{{ error }}</div>{% endif %}
+<form method="post" action="/password/reset/{{ token }}" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>New password <input name="password" type="password" minlength="10" required></label><label>Repeat <input name="password2" type="password" minlength="10" required></label><button class="primary">Save</button></form></div>{% endblock %}

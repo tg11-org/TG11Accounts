@@ -1,0 +1,8 @@
+{% extends "base.html" %}{% block title %}Authorize {{ client.name }}{% endblock %}{% block content %}
+<div class="panel"><h1>Allow <b>{{ client.name }}</b> to use your TG11 account?</h1>
+<p>Signed in as <b>{{ user.username }}</b> ({{ user.email }}). The application will receive:</p>
+<ul class="scopes">{% for s in scopes %}<li>{% if s == 'openid' %}Your stable TG11 user ID{% elif s == 'profile' %}Your username and display name{% elif s == 'email' %}Your email address and whether it is verified{% elif s == 'tg11.profile' %}TG11 account details (username, account state, member since){% elif s == 'offline_access' %}Long-lived access (refresh tokens) so you stay signed in{% else %}{{ s }}{% endif %}</li>{% endfor %}</ul>
+<form method="post" action="/oauth/authorize" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="query" value="{{ query }}">
+<button class="primary" name="decision" value="allow">Allow</button><button name="decision" value="deny">Deny</button></form>
+<p class="muted small">You can revoke this later from your <a href="/account">TG11 account page</a>.</p></div>
+{% endblock %}

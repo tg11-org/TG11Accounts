@@ -1,0 +1,17 @@
+{% extends "base.html" %}{% block wrapclass %}wide{% endblock %}{% block title %}Your TG11 account{% endblock %}{% block content %}
+<div class="panel"><h1>Your TG11 account</h1>
+<p class="small">TG11 user ID <code>{{ user.id }}</code> · {{ user.email }} {% if user.email_verified %}<span class="muted">(verified)</span>{% else %}<span class="muted">(not verified)</span>{% endif %} · state {{ user.state }} · member since {{ user.created_at.strftime('%Y-%m-%d') }}</p>
+<form method="post" action="/account/profile" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<label>Username <input name="username" value="{{ user.username }}"></label><label>Display name <input name="display_name" value="{{ user.display_name }}"></label><button type="submit">Save</button></form></div>
+<div class="panel"><h2>Password</h2><form method="post" action="/account/password" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+{% if user.password_hash %}<label>Current <input name="current_password" type="password" autocomplete="current-password"></label>{% endif %}
+<label>New <input name="new_password" type="password" minlength="10" autocomplete="new-password"></label><label>Repeat <input name="new_password2" type="password" minlength="10" autocomplete="new-password"></label><button type="submit">Change</button></form></div>
+<div class="panel"><h2>Connected applications</h2>
+<table><tr><th>Application</th><th>Access</th><th>Since</th><th></th></tr>
+{% for c in consents %}<tr><td>{{ clients[c.client_id].name if c.client_id in clients else c.client_id }}</td><td class="small">{{ c.scope }}</td><td class="small">{{ c.granted_at.strftime('%Y-%m-%d') }}</td><td><form method="post" action="/account/consents/{{ c.client_id }}/revoke"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="danger">Revoke</button></form></td></tr>
+{% else %}<tr><td colspan="4" class="muted">No applications authorised yet (first-party apps like Flowboard don't need consent).</td></tr>{% endfor %}</table></div>
+<div class="panel"><h2>Sessions</h2>
+<table><tr><th>Started</th><th>Last seen</th><th>IP</th><th>Agent</th><th></th></tr>
+{% for s in sessions %}<tr><td class="small">{{ s.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td class="small">{{ s.last_seen_at.strftime('%Y-%m-%d %H:%M') }}</td><td class="small">{{ s.ip_address }}</td><td class="small muted">{{ s.user_agent[:50] }}</td><td>{% if s.id == sid %}<span class="muted small">this session</span>{% else %}<form method="post" action="/account/sessions/{{ s.id }}/revoke"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Revoke</button></form>{% endif %}</td></tr>{% endfor %}</table>
+<form method="post" action="/logout" style="margin-top:.8rem"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Sign out</button></form></div>
+{% endblock %}

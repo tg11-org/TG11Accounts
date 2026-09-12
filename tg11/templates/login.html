@@ -1,0 +1,9 @@
+{% extends "base.html" %}{% block title %}Sign in · {{ site_name }}{% endblock %}{% block content %}
+<div class="panel"><h1>Sign in with TG11</h1>
+{% if error %}<div class="flash bad">{{ error }}</div>{% endif %}{% if notice %}<div class="flash ok">{{ notice }}</div>{% endif %}
+<form method="post" action="/login" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="next" value="{{ next }}">
+<label>Email or username <input name="identifier" value="{{ identifier or '' }}" required autofocus autocomplete="username"></label>
+<label>Password <input name="password" type="password" required autocomplete="current-password"></label>
+<button class="primary" type="submit">Sign in</button></form>
+<p class="muted small"><a href="/password/forgot">Forgot password?</a>{% if registration %} · <a href="/register?next={{ next|urlencode }}">Create a TG11 account</a>{% endif %}</p></div>
+{% endblock %}

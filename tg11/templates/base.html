@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>{% block title %}{{ site_name }}{% endblock %}</title><meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{--bg:#0e1329;--panel:#0f1530;--card:#141a3a;--line:#2a2f55;--accent:#5cdfb7;--muted:#9aa2c1;--text:#e8ecff;--danger:#ff6b6b}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#0b1021,#0e1329);color:var(--text);font-family:Inter,system-ui,"Segoe UI",Arial,sans-serif;min-height:100vh}
+a{color:#9fd8ff}.wrap{max-width:520px;margin:2.5rem auto;padding:0 1rem}.wide{max-width:860px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:1rem;padding:1.25rem;margin-bottom:1rem}
+h1{font-size:1.4rem;margin:.2rem 0 1rem}h2{font-size:1.1rem;margin:.2rem 0 .6rem;color:#cfe7ff}
+.brand{font-weight:800;letter-spacing:.02em;color:var(--accent);text-decoration:none;font-size:1.1rem}
+.stack{display:flex;flex-direction:column;gap:.6rem}label{display:flex;flex-direction:column;gap:.2rem;font-size:.9rem;color:#cfe7ff}
+input{padding:.55rem .65rem;border:1px solid var(--line);background:#0b1021;color:var(--text);border-radius:.6rem;font:inherit}
+button,.btn{font:inherit;cursor:pointer;padding:.55rem .8rem;border-radius:.6rem;border:1px solid var(--line);background:var(--panel);color:var(--text);text-decoration:none;display:inline-block}
+.primary{background:var(--accent);color:#06181a;border-color:transparent;font-weight:700}.danger{background:var(--danger);color:#19050a;border-color:transparent}
+.flash{padding:.6rem .8rem;border-radius:.6rem;margin-bottom:.75rem;border:1px solid var(--line)}.ok{background:#0f2a25;border-color:#1f6b58}.bad{background:#2a0f16;border-color:#7a2b39}
+.muted{color:var(--muted)}.small{font-size:.85rem}.row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center}
+table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:.4rem .5rem;border-bottom:1px solid var(--line);vertical-align:top}
+ul.scopes{padding-left:1.2rem}code{background:#0b1021;padding:.05rem .3rem;border-radius:.3rem}
+</style></head>
+<body><div class="wrap {% block wrapclass %}{% endblock %}">
+<p><a class="brand" href="/">TG11 Account</a>{% if user %} <span class="muted small">· signed in as {{ user.username }}</span>{% endif %}</p>
+{% if msg %}<div class="flash ok">{{ msg }}</div>{% endif %}{% if err %}<div class="flash bad">{{ err }}</div>{% endif %}
+{% block content %}{% endblock %}
+<p class="muted small">TG11 Accounts {{ version }} · one identity for TG11 &amp; VulpFin services</p>
+</div></body></html>
