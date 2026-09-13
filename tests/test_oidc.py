@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import tempfile
+from html import unescape
 from urllib.parse import parse_qs, urlparse
 
 os.environ.update({"TG11_ENV": "test", "TG11_DATA_DIR": tempfile.mkdtemp(), "TG11_SECRET_KEY": "test-secret-0123456789", "TG11_ISSUER": "http://accounts.test", "TG11_COOKIE_SECURE": "false"})
@@ -126,6 +127,30 @@ def test_pkce_and_client_auth_enforced(client, capsys):
     # unregistered redirect uri is refused before any redirect happens
     r = client.get("/oauth/authorize", params={"response_type": "code", "client_id": "flowboard", "redirect_uri": "https://evil.test/cb", "scope": "openid"}, follow_redirects=False)
     assert r.status_code == 400 and "not registered" in r.text
+
+
+def test_prompt_login_reauthenticates_existing_session_once(client, capsys):
+    _add_client(capsys, trusted=True)
+    _register(client)
+    url = ("/oauth/authorize?response_type=code&client_id=flowboard"
+           "&redirect_uri=https%3A%2F%2Fflowboard.test%2Fauth%2Ftg11%2Fcallback"
+           "&scope=openid+profile+email&state=again&nonce=fresh&prompt=login"
+           "&code_challenge=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&code_challenge_method=S256")
+    first = client.get(url, follow_redirects=False)
+    assert first.status_code == 303 and first.headers["location"].startswith("/login?")
+    page = client.get(first.headers["location"], follow_redirects=False)
+    assert page.status_code == 200 and "Sign in with TG11" in page.text
+    csrf = re.search(r'name="csrf_token" value="([^"]+)"', page.text).group(1)
+    next_url = unescape(re.search(r'name="next" value="([^"]+)"', page.text).group(1))
+    signed_in = client.post("/login", data={"identifier": "alice", "password": "correct-horse-battery",
+                                             "next": next_url, "csrf_token": csrf}, follow_redirects=False)
+    assert signed_in.status_code == 303
+    tampered = signed_in.headers["location"].replace("state=again", "state=someone-else")
+    assert client.get(tampered, follow_redirects=False).headers["location"].startswith("/login?")
+    done = client.get(signed_in.headers["location"], follow_redirects=False)
+    assert done.status_code == 302
+    assert "code" in parse_qs(urlparse(done.headers["location"]).query)
+    assert client.get(url, follow_redirects=False).headers["location"].startswith("/login?")
 
 
 def test_consent_and_userinfo_and_refresh(client, capsys):
