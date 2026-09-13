@@ -19,6 +19,7 @@ Optional behaviour:
                                                when the IdP asserts email_verified
     TG11_AUTH_REQUIRE_ACTIVE_STATE      True   refuse suspended/limited TG11 accounts
     TG11_AUTH_PROFILE_HOOK              ""     "myapp.auth.on_tg11_login"
+    TG11_AUTH_LOGIN_GUARD               ""     "myapp.auth.refuse_if_local_2fa"
     TG11_AUTH_LOGIN_REDIRECT            LOGIN_REDIRECT_URL
     TG11_AUTH_POST_LOGOUT_REDIRECT      "/"
     TG11_AUTH_FEDERATION_ID             ""     stamped on link rows (FurryParty…)
@@ -80,6 +81,15 @@ def login_redirect() -> str:
 
 def post_logout_redirect() -> str:
     return str(get("TG11_AUTH_POST_LOGOUT_REDIRECT") or "/")
+
+
+def login_guard() -> Optional[Any]:
+    """Callable the application supplies to veto a TG11 sign-in:
+
+        def refuse_if_local_2fa(user, claims): ...   # raise AuthError to refuse
+    """
+    path = get("TG11_AUTH_LOGIN_GUARD") or ""
+    return import_string(path) if path else None
 
 
 def profile_hook() -> Optional[Any]:

@@ -23,10 +23,12 @@ Suspended or limited TG11 accounts are refused before any of this when the
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from typing import Any, Dict, Optional, Tuple
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
@@ -70,15 +72,34 @@ def _user_by_email(email: str):
     return User._default_manager.filter(**{f"{field}__iexact": email}).order_by("pk").first()
 
 
-def _unique_username(base: str) -> str:
-    """Only used when the local model has a username field (many do not)."""
+USERNAME_SAFE = re.compile(r"[^a-z0-9_]+")
+
+
+def _max_length(field_name: str, default: int = 30) -> int:
     User = get_user_model()
-    field = getattr(User, "USERNAME_FIELD", "username")
-    base = (base or "user").strip().lower()[:24] or "user"
+    try:
+        return getattr(User._meta.get_field(field_name), "max_length", None) or default
+    except Exception:
+        return default
+
+
+def _unique_username(base: str, field: str = "username") -> str:
+    """A handle the local model will actually accept.
+
+    Applications validate usernames (FreeParty's regex, the length limits), and
+    some of them build other things out of it - FreeParty mints an ActivityPub
+    actor from it on first save - so it is sanitised to [a-z0-9_], trimmed to
+    the field's real max_length, and made unique with a numeric suffix.
+    """
+    User = get_user_model()
+    limit = _max_length(field)
+    base = USERNAME_SAFE.sub("", (base or "").strip().lower()) or "tg11user"
+    base = base[: max(1, limit - 3)]
     candidate, n = base, 1
     while User._default_manager.filter(**{field: candidate}).exists():
         n += 1
-        candidate = f"{base}{n}"[:30]
+        suffix = str(n)
+        candidate = f"{base[: limit - len(suffix)]}{suffix}"
     return candidate
 
 
@@ -87,25 +108,63 @@ def create_local_user(claims: Claims):
 
     SSO-only: the local password is left unusable, so the only way in is TG11
     until the user sets one.
+
+    Local models differ more than you would hope - `USERNAME_FIELD` may be
+    `email` (FreeParty, Shop) or `username` (stock Django), and `REQUIRED_FIELDS`
+    may demand a handle on top of that - so every required field is filled
+    before validating, and a model we cannot satisfy raises AuthError rather
+    than a 500.
     """
     User = get_user_model()
     username_field = getattr(User, "USERNAME_FIELD", "username")
     email_field = getattr(User, "EMAIL_FIELD", "email")
+    names = {f.name for f in User._meta.fields}
     fields: Dict[str, Any] = {}
-    if email_field:
+
+    if email_field and email_field in names:
         fields[email_field] = claims.email
-    if username_field and username_field != email_field:
-        fields[username_field] = _unique_username(claims.preferred_username or (claims.email.split("@")[0] if claims.email else ""))
+    handle_seed = claims.preferred_username or (claims.email.split("@")[0] if claims.email else "")
+    if username_field and username_field != email_field and username_field in names:
+        fields[username_field] = _unique_username(handle_seed, username_field)
+
+    # REQUIRED_FIELDS is what the model says it cannot live without.
+    for required in list(getattr(User, "REQUIRED_FIELDS", []) or []):
+        if required in fields or required not in names:
+            continue
+        if required in ("username", "handle", "nickname", "slug"):
+            fields[required] = _unique_username(handle_seed, required)
+        elif required in ("email", "email_address"):
+            fields[required] = claims.email
+        elif required in ("first_name", "name", "display_name", "full_name"):
+            fields[required] = (claims.name or handle_seed)[: _max_length(required, 80)]
+        else:
+            raise AuthError(
+                f"This application's account model requires '{required}', which TG11 cannot supply. "
+                "Sign up here first, then link TG11 from your account settings."
+            )
+
     for optional, value in (("display_name", claims.name), ("first_name", (claims.name or "").split(" ")[0])):
-        if any(f.name == optional for f in User._meta.fields) and value:
-            fields.setdefault(optional, value[:80])
+        if optional in names and value:
+            fields.setdefault(optional, value[: _max_length(optional, 80)])
+
     user = User(**fields)
     user.set_unusable_password()
-    if any(f.name == "email_verified_at" for f in User._meta.fields) and claims.email_verified:
+    if "email_verified_at" in names and claims.email_verified:
         user.email_verified_at = timezone.now()
-    if any(f.name == "state" for f in User._meta.fields):
+        fields["email_verified_at"] = user.email_verified_at
+    if "state" in names and claims.email_verified:
+        # The IdP already proved the address; don't park them in a
+        # pending-verification state they can never clear here.
         user.state = "active"
-    user.full_clean(exclude=[f.name for f in User._meta.fields if f.name not in fields])
+        fields["state"] = "active"
+    try:
+        user.full_clean(exclude=[n for n in names if n not in fields])
+    except ValidationError as exc:
+        log.warning("tg11_auth: local account model rejected a TG11 identity: %s", exc.message_dict)
+        raise AuthError(
+            "This application could not create an account from that TG11 profile. "
+            "Sign up here first, then link TG11 from your account settings."
+        )
     user.save()
     return user
 
@@ -124,6 +183,7 @@ def resolve_user(claims: Claims, *, request=None) -> Tuple[Any, bool, TG11Identi
         user = link.user
         if not getattr(user, "is_active", True):
             raise AccountDisabled("That account is disabled here.")
+        _run_guard(user, claims)
         _refresh_snapshot(link, claims)
         link.touch()
         _run_hook(user=user, claims=claims, created=False, link=link, request=request)
@@ -131,6 +191,7 @@ def resolve_user(claims: Claims, *, request=None) -> Tuple[Any, bool, TG11Identi
 
     existing = _user_by_email(claims.email)
     if existing is not None:
+        _run_guard(existing, claims)
         if not (claims.email_verified and conf.autolink_verified_email()):
             raise LinkRequired(claims.email)
         if TG11IdentityLink.objects.filter(user=existing).exists():
@@ -207,6 +268,35 @@ def _refresh_snapshot(link: TG11IdentityLink, claims: Claims, *, save: bool = Tr
     link.username_at_link = (claims.preferred_username or "")[:150]
     if save:
         link.save(update_fields=["email_at_link", "username_at_link"])
+
+
+def _run_guard(user, claims: Claims) -> None:
+    """An application's own veto on a TG11 sign-in.
+
+    ``TG11_AUTH_LOGIN_GUARD`` names a callable ``(user, claims) -> None`` that
+    raises ``AuthError`` to refuse. The case it exists for: an account with a
+    *local* second factor. Until MFA lands at the provider, letting a single
+    TG11 password stand in for password + TOTP would quietly downgrade that
+    account's security, so the application refuses instead::
+
+        def refuse_if_local_2fa(user, claims):
+            if TOTPDevice.objects.filter(user=user, verified=True).exists():
+                raise AuthError("This account uses two-factor authentication here …")
+
+    Unlike the profile hook, an exception here is **not** swallowed - vetoing is
+    the whole point - but a non-AuthError bug is turned into a refusal rather
+    than a 500, so a broken guard fails closed.
+    """
+    guard = conf.login_guard()
+    if guard is None:
+        return
+    try:
+        guard(user, claims)
+    except AuthError:
+        raise
+    except Exception:
+        log.exception("tg11_auth: login guard failed; refusing the sign-in")
+        raise AuthError("This application could not verify that TG11 sign-in. Please sign in the usual way.")
 
 
 def _run_hook(**kwargs) -> None:

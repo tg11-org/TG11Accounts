@@ -28,3 +28,6 @@ tg11_auth = ["templates/tg11_auth/*.html"]
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "tests.settings"
 python_files = ["test_*.py"]
+# The custom-user suite needs a different AUTH_USER_MODEL, so it runs as its own
+# pass:  python -m pytest --ds=tests.settings_customuser tests/test_customuser.py
+addopts = "--ignore=tests/test_customuser.py"

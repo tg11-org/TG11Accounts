@@ -11,6 +11,7 @@ from django.contrib.auth import get_user_model
 from joserfc.jwk import RSAKey
 
 from tests.conftest import session_blob
+from tg11_auth import services
 from tg11_auth.models import MigrationSource, MigrationStatus, TG11IdentityLink
 
 pytestmark = pytest.mark.django_db
@@ -385,3 +386,43 @@ def test_context_processor_reports_link_state(client, idp, start_login):
     tpl = Template("{% include 'tg11_auth/button.html' %}")
     html = tpl.render(Context({"tg11_configured": True, "tg11_linked": True, "link_mode": True, "csrf_token": "x"}))
     assert "Unlink TG11" in html
+
+
+# ---- login guard ---------------------------------------------------------
+def _guard_refuses(user, claims):
+    raise services.AuthError("This account uses two-factor authentication here; sign in with your password and code.")
+
+
+def _guard_explodes(user, claims):
+    raise RuntimeError("guard bug")
+
+
+def test_login_guard_can_refuse_an_existing_account(client, idp, start_login, settings):
+    User.objects.create_user("oldtimer", email="new@example.test", password="pw")
+    settings.TG11_AUTH_LOGIN_GUARD = "tests.test_views._guard_refuses"
+    resp = _callback(client, start_login())
+    assert resp.status_code == 403
+    assert b"two-factor" in resp.content
+    assert not TG11IdentityLink.objects.exists()
+    assert "_auth_user_id" not in client.session
+
+
+def test_login_guard_also_applies_to_an_already_linked_account(client, idp, start_login, settings):
+    _callback(client, start_login())                 # link it first
+    client.logout()
+    settings.TG11_AUTH_LOGIN_GUARD = "tests.test_views._guard_refuses"
+    resp = _callback(client, start_login())
+    assert resp.status_code == 403
+    assert "_auth_user_id" not in client.session
+
+
+def test_broken_login_guard_fails_closed(client, idp, start_login, settings):
+    User.objects.create_user("oldtimer", email="new@example.test", password="pw")
+    settings.TG11_AUTH_LOGIN_GUARD = "tests.test_views._guard_explodes"
+    resp = _callback(client, start_login())
+    assert resp.status_code == 403                    # refused, not a 500 and not a sign-in
+    assert "_auth_user_id" not in client.session
+
+
+def test_no_guard_configured_is_the_default(client, idp, start_login):
+    assert _callback(client, start_login()).status_code == 302
