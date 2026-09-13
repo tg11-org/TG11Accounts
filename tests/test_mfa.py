@@ -5,6 +5,7 @@ import os
 import re
 import tempfile
 import time
+from html import unescape
 from urllib.parse import parse_qs, urlparse
 
 os.environ.update({
@@ -332,6 +333,50 @@ def test_prompt_none_with_unmet_acr_reports_it_to_the_application(client, capsys
                    "&scope=openid&state=s&nonce=n&acr_values=urn%3Atg11%3A2fa&prompt=none", follow_redirects=False)
     assert r.status_code == 302
     assert parse_qs(urlparse(r.headers["location"]).query)["error"] == ["unmet_authentication_requirements"]
+
+
+def test_fresh_login_without_enrolled_mfa_returns_error_instead_of_loop(client, capsys):
+    _add_client(capsys)
+    _register(client)
+    url = ("/oauth/authorize?response_type=code&client_id=app1&redirect_uri=https%3A%2F%2Fapp.test%2Fcb"
+           "&scope=openid&state=s&nonce=n&acr_values=urn%3Atg11%3A2fa")
+    first = client.get(url, follow_redirects=False)
+    page = client.get(first.headers["location"], follow_redirects=False)
+    assert page.status_code == 200
+    csrf = re.search(r'name="csrf_token" value="([^"]+)"', page.text).group(1)
+    next_url = unescape(re.search(r'name="next" value="([^"]+)"', page.text).group(1))
+    signed_in = client.post("/login", data={"identifier": "alice", "password": PW,
+                                             "next": next_url, "csrf_token": csrf}, follow_redirects=False)
+    done = client.get(signed_in.headers["location"], follow_redirects=False)
+    assert done.status_code == 302
+    assert parse_qs(urlparse(done.headers["location"]).query)["error"] == ["unmet_authentication_requirements"]
+
+
+def test_prompt_login_with_mfa_completes_authorization(client, capsys):
+    _add_client(capsys)
+    _register(client)
+    _secret, codes = _enable_totp(client)
+    url = ("/oauth/authorize?response_type=code&client_id=app1&redirect_uri=https%3A%2F%2Fapp.test%2Fcb"
+           "&scope=openid&state=s&nonce=n&acr_values=urn%3Atg11%3A2fa&prompt=login")
+    first = client.get(url, follow_redirects=False)
+    page = client.get(first.headers["location"], follow_redirects=False)
+    assert page.status_code == 200
+    csrf = re.search(r'name="csrf_token" value="([^"]+)"', page.text).group(1)
+    next_url = unescape(re.search(r'name="next" value="([^"]+)"', page.text).group(1))
+    password = client.post("/login", data={"identifier": "alice", "password": PW,
+                                            "next": next_url, "csrf_token": csrf}, follow_redirects=False)
+    assert password.status_code == 303 and password.headers["location"].startswith("/login/mfa")
+    assert client.cookies.get("tg11_session") is None
+    mfa_page = client.get(password.headers["location"])
+    assert mfa_page.status_code == 200
+    mfa_csrf = re.search(r'name="csrf_token" value="([^"]+)"', mfa_page.text).group(1)
+    mfa_next = unescape(re.search(r'name="next" value="([^"]+)"', mfa_page.text).group(1))
+    second = client.post("/login/mfa", data={"code": codes[0], "next": mfa_next,
+                                              "csrf_token": mfa_csrf}, follow_redirects=False)
+    assert second.status_code == 303, second.text
+    done = client.get(second.headers["location"], follow_redirects=False)
+    assert done.status_code == 302
+    assert "code" in parse_qs(urlparse(done.headers["location"]).query)
 
 
 def test_refreshed_id_token_keeps_the_real_factors(client, capsys, monkeypatch):

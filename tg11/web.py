@@ -4,11 +4,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
 import os
 import secrets
 from typing import Optional
-from urllib.parse import quote, urlencode
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
@@ -30,7 +31,10 @@ _signer = URLSafeTimedSerializer(settings.TG11_SECRET_KEY, salt="tg11-session")
 #: in yet. It is signed, short-lived, and grants nothing on its own.
 _mfa_signer = URLSafeTimedSerializer(settings.TG11_SECRET_KEY, salt="tg11-mfa-pending")
 COOKIE, CSRF_COOKIE, MFA_COOKIE = "tg11_session", "tg11_csrf", "tg11_mfa"
+REAUTH_COOKIE = "tg11_oidc_reauth"
 MFA_PENDING_MAX_AGE = 300  # seconds to finish the second step
+REAUTH_MAX_AGE = 300
+_reauth_signer = URLSafeTimedSerializer(settings.TG11_SECRET_KEY, salt="tg11-oidc-reauth")
 
 
 class LoginRequired(Exception):
@@ -44,6 +48,46 @@ def _redirect(url: str) -> RedirectResponse:
 
 def _safe_next(url: Optional[str]) -> str:
     return url if url and url.startswith("/") and not url.startswith("//") else "/account"
+
+
+# Bind a fresh login to the exact authorization request and new session.
+def _authorize_fingerprint(url: str) -> str:
+    parsed = urlsplit(url)
+    if parsed.path != "/oauth/authorize" or parsed.fragment:
+        return ""
+    query = urlencode(parse_qsl(parsed.query, keep_blank_values=True))
+    return hashlib.sha256(query.encode()).hexdigest()
+
+
+def _set_reauth_proof(resp: Response, next_url: str, sid: str) -> None:
+    fingerprint = _authorize_fingerprint(_safe_next(next_url))
+    if fingerprint:
+        resp.set_cookie(
+            REAUTH_COOKIE,
+            _reauth_signer.dumps({"sid": sid, "request": fingerprint}),
+            max_age=REAUTH_MAX_AGE,
+            httponly=True,
+            secure=settings.TG11_COOKIE_SECURE and not settings.is_dev,
+            samesite="lax",
+            path="/oauth/authorize",
+        )
+
+
+def _completed_reauth(request: Request, sess: Optional[UserSession]) -> bool:
+    if sess is None or not request.cookies.get(REAUTH_COOKIE):
+        return False
+    try:
+        proof = _reauth_signer.loads(request.cookies[REAUTH_COOKIE], max_age=REAUTH_MAX_AGE)
+    except BadSignature:
+        return False
+    if not isinstance(proof, dict):
+        return False
+    fingerprint = _authorize_fingerprint(str(request.url.path) + "?" + str(request.url.query))
+    return bool(
+        fingerprint
+        and secrets.compare_digest(str(proof.get("sid", "")), str(sess.id))
+        and secrets.compare_digest(str(proof.get("request", "")), fingerprint)
+    )
 
 
 def read_sid(request: Request) -> Optional[str]:
@@ -215,6 +259,7 @@ def authorize(request: Request, response_type: str = "", client_id: str = "", re
         return _authz_redirect(redirect_uri, {"error": "invalid_request", "error_description": "PKCE required for public clients"}, state)
     here = "/oauth/authorize?" + str(request.url.query)
     sess = getattr(request.state, "session", None) if user is not None else None
+    reauthenticated = _completed_reauth(request, sess)
     stale = False
     if sess is not None and max_age is not None:
         try:
@@ -225,16 +270,23 @@ def authorize(request: Request, response_type: str = "", client_id: str = "", re
     # single-factor session it would have to reject itself
     wants_mfa = oidc.ACR_MFA in (acr_values or "").split()
     unmet_acr = bool(sess is not None and wants_mfa and not ({"otp", "recovery"} & set(sess.amr.split())))
-    if user is None or prompt == "login" or stale or unmet_acr:
+    if user is None or ((prompt == "login" or stale) and not reauthenticated) or unmet_acr:
         if prompt == "none":
             return _authz_redirect(redirect_uri, {"error": "login_required" if not unmet_acr else "unmet_authentication_requirements"}, state)
+        if reauthenticated and unmet_acr:
+            resp = _authz_redirect(redirect_uri, {"error": "unmet_authentication_requirements"}, state)
+            resp.delete_cookie(REAUTH_COOKIE, path="/oauth/authorize")
+            return resp
         return _redirect(f"/login?next={quote(here)}&reauth=1")
     if not oidc.has_consent(db, user, client, scopes):
         if prompt == "none":
             return _authz_redirect(redirect_uri, {"error": "consent_required"}, state)
         return render(request, "consent.html", {"client": client, "scopes": scopes, "query": str(request.url.query)})
     code = oidc.issue_code(db, user, client, redirect_uri, scopes, nonce, code_challenge, code_challenge_method, sess.id, amr=sess.amr, auth_time=sess.created_at)
-    return _authz_redirect(redirect_uri, {"code": code}, state)
+    resp = _authz_redirect(redirect_uri, {"code": code}, state)
+    if reauthenticated:
+        resp.delete_cookie(REAUTH_COOKIE, path="/oauth/authorize")
+    return resp
 
 
 @app.post("/oauth/authorize", dependencies=[Depends(csrf_protect)])
@@ -330,8 +382,8 @@ def home(user: Optional[User] = Depends(current_user_optional)):
 
 
 @app.get("/login")
-def login_page(request: Request, next: str = "/account", user: Optional[User] = Depends(current_user_optional)):
-    if user is not None:
+def login_page(request: Request, next: str = "/account", reauth: bool = False, user: Optional[User] = Depends(current_user_optional)):
+    if user is not None and not reauth:
         return _redirect(_safe_next(next))
     return render(request, "login.html", {"next": _safe_next(next)})
 
@@ -349,10 +401,12 @@ def login_submit(request: Request, identifier: str = Form(...), password: str = 
         resp = _redirect(f"/login/mfa?next={quote(_safe_next(next))}")
         resp.set_cookie(MFA_COOKIE, _mfa_signer.dumps(user.id), max_age=MFA_PENDING_MAX_AGE, httponly=True,
                         secure=settings.TG11_COOKIE_SECURE and not settings.is_dev, samesite="lax", path="/")
+        resp.delete_cookie(COOKIE, path="/")
         return resp
     sess = accounts.create_session(db, user, request.headers.get("user-agent", ""), request.client.host if request.client else "", amr="pwd")
     resp = _redirect(_safe_next(next))
     set_session(resp, sess.id)
+    _set_reauth_proof(resp, next, sess.id)
     resp.delete_cookie(CSRF_COOKIE, path="/")
     return resp
 
@@ -390,6 +444,7 @@ def mfa_submit(request: Request, code: str = Form(""), next: str = Form("/accoun
     sess = accounts.create_session(db, user, request.headers.get("user-agent", ""), request.client.host if request.client else "", amr=f"pwd {method}")
     resp = _redirect(_safe_next(next))
     set_session(resp, sess.id)
+    _set_reauth_proof(resp, next, sess.id)
     resp.delete_cookie(MFA_COOKIE, path="/")
     resp.delete_cookie(CSRF_COOKIE, path="/")
     log.info("tg11: signed in with a second factor (user=%s method=%s)", user.id, method)
