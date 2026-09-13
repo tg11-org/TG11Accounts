@@ -22,7 +22,9 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import timedelta
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 import httpx
 from sqlalchemy import select
@@ -36,6 +38,25 @@ log = logging.getLogger("tg11.payments")
 
 class PaymentError(Exception):
     pass
+
+
+# Money crosses a provider boundary in whatever units that provider counts in.
+# TG11 counts ISO minor units everywhere; these are the exceptions to the usual
+# two decimal places, and the shorter list is what PayPal refuses decimals for.
+ISO_ZERO_DECIMAL = {"BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA", "PYG", "RWF", "UGX", "VND", "VUV", "XAF", "XOF", "XPF"}
+ISO_THREE_DECIMAL = {"BHD", "JOD", "KWD", "OMR", "TND"}
+PAYPAL_NO_DECIMALS = {"HUF", "JPY", "TWD"}
+
+
+def iso_places(currency: str) -> int:
+    currency = str(currency).upper()
+    return 0 if currency in ISO_ZERO_DECIMAL else 3 if currency in ISO_THREE_DECIMAL else 2
+
+
+def paypal_value(amount: int, currency: str) -> str:
+    """Minor units -> the decimal string PayPal quotes money in."""
+    places = 0 if str(currency).upper() in PAYPAL_NO_DECIMALS else iso_places(currency)
+    return f"{Decimal(int(amount)) / (10 ** iso_places(currency)):.{places}f}"
 
 
 @dataclass
@@ -134,6 +155,154 @@ class StripeProvider(PaymentProvider):
                 pass
 
 
+# --- PayPal (a saved PayPal account) --------------------------------------------
+
+class PayPalProvider(PaymentProvider):
+    """A PayPal account saved once and charged later.
+
+    PayPal's own names for the three pieces: a *setup token* is the approval the
+    person gives at PayPal, a *payment token* is what TG11 keeps afterwards, and
+    an *authorization* is the hold an application places against it. TG11 stores
+    the token ids and the payer's email address - never credentials, never a
+    funding instrument.
+    """
+
+    def __init__(self):
+        self.info = ProviderInfo(
+            "paypal", "PayPal", "wallet",
+            "available" if settings.paypal_configured else "not_configured",
+            "Approve TG11 at PayPal once (PayPal Vault), then apps place holds against the saved account. PayPal honours an authorisation for 3 days and keeps it voidable for 29. Saving an account needs PayPal to switch Vault on for the merchant account first.",
+        )
+        self._access: tuple[str, float] = ("", 0.0)
+
+    @property
+    def api(self) -> str:
+        return settings.paypal_api
+
+    def _token(self) -> str:
+        import time
+
+        token, expires = self._access
+        if token and expires > time.time() + 60:
+            return token
+        try:
+            r = httpx.post(f"{self.api}/v1/oauth2/token", data={"grant_type": "client_credentials"},
+                           auth=(settings.PAYPAL_CLIENT_ID, settings.PAYPAL_CLIENT_SECRET), timeout=30)
+        except httpx.HTTPError as exc:
+            raise PaymentError(f"PayPal unreachable: {exc.__class__.__name__}")
+        if r.status_code >= 400:
+            raise PaymentError("PayPal rejected this server's credentials")
+        body = r.json()
+        self._access = (body.get("access_token", ""), time.time() + float(body.get("expires_in", 0) or 0))
+        return self._access[0]
+
+    def _req(self, method: str, path: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        headers = {"Authorization": f"Bearer {self._token()}", "Content-Type": "application/json",
+                   "PayPal-Request-Id": uuid4().hex}
+        try:
+            r = httpx.request(method, f"{self.api}{path}", json=body, headers=headers, timeout=30)
+        except httpx.HTTPError as exc:
+            raise PaymentError(f"PayPal unreachable: {exc.__class__.__name__}")
+        data = r.json() if r.content else {}
+        if r.status_code >= 400:
+            detail = (data.get("details") or [{}])[0]
+            raise PaymentError(str(detail.get("description") or data.get("message") or f"PayPal error {r.status_code}")[:200])
+        return data if isinstance(data, dict) else {}
+
+    def begin_setup(self, db: Session, user: User) -> Dict[str, Any]:
+        if not settings.paypal_configured:
+            raise PaymentError("PayPal is not configured on this server")
+        try:
+            data = self._setup_token()
+        except PaymentError as exc:
+            if "not allowed to vault" in str(exc).lower() or "not_enabled_to_vault" in str(exc).lower():
+                raise PaymentError("PayPal has not switched Vault on for this merchant account yet, so a PayPal account cannot be saved here. Ask PayPal support to enable saved payment methods, then try again.")
+            raise
+        approve = next((l.get("href", "") for l in data.get("links", []) if l.get("rel") in ("approve", "payer-action")), "")
+        if not approve:
+            raise PaymentError("PayPal did not offer an approval link")
+        return {"mode": "redirect", "url": approve, "setup_token": data.get("id", "")}
+
+    def _setup_token(self) -> Dict[str, Any]:
+        return self._req("POST", "/v3/vault/setup-tokens", {
+            "payment_source": {"paypal": {
+                "usage_type": "MERCHANT",
+                "customer_type": "CONSUMER",
+                "permit_multiple_payment_tokens": False,
+                "experience_context": {
+                    "brand_name": settings.TG11_SITE_NAME,
+                    "vault_instruction": "ON_CREATE_PAYMENT_TOKENS",
+                    "shipping_preference": "NO_SHIPPING",
+                    "return_url": f"{settings.issuer}/wallet/paypal/complete",
+                    "cancel_url": f"{settings.issuer}/wallet?err=PayPal+setup+was+cancelled",
+                },
+            }},
+        })
+
+    def complete_setup(self, db: Session, user: User, payload: Dict[str, Any]) -> PaymentMethod:
+        setup_token = str(payload.get("approval_token_id") or payload.get("setup_token") or "").strip()
+        if not setup_token:
+            raise PaymentError("PayPal setup was not completed")
+        data = self._req("POST", "/v3/vault/payment-tokens", {"payment_source": {"token": {"id": setup_token, "type": "SETUP_TOKEN"}}})
+        if not data.get("id"):
+            raise PaymentError("PayPal did not return a saved account")
+        source = (data.get("payment_source") or {}).get("paypal") or {}
+        email = str(source.get("email_address", ""))
+        method = PaymentMethod(
+            user_id=user.id, provider="paypal", kind="wallet",
+            label=f"PayPal ({email})" if email else "PayPal account",
+            external_customer_id=str((data.get("customer") or {}).get("id", "")),
+            external_method_id=str(data["id"]), status="active",
+            meta_json=json.dumps({"email": email, "payer_id": source.get("account_id", ""), "env": settings.PAYPAL_ENV}),
+        )
+        db.add(method)
+        db.flush()
+        return method
+
+    def authorize(self, method: PaymentMethod, amount: int, currency: str, description: str, reference: str) -> str:
+        order = self._req("POST", "/v2/checkout/orders", {
+            "intent": "AUTHORIZE",
+            "purchase_units": [{
+                "custom_id": (reference or method.user_id)[:127],
+                "description": (description or "TG11 authorisation")[:127],
+                "amount": {"currency_code": currency.upper(), "value": paypal_value(amount, currency)},
+            }],
+            "payment_source": {"paypal": {"vault_id": method.external_method_id}},
+        })
+        if order.get("status") not in ("COMPLETED", "APPROVED"):
+            raise PaymentError(f"PayPal would not charge the saved account (order {order.get('status', 'unknown')})")
+        if not self._authorization_id(order):
+            order = self._req("POST", f"/v2/checkout/orders/{order.get('id', '')}/authorize", {})
+        hold_id = self._authorization_id(order)
+        if not hold_id:
+            raise PaymentError("PayPal did not place an authorisation")
+        return hold_id
+
+    @staticmethod
+    def _authorization_id(order: Dict[str, Any]) -> str:
+        for unit in order.get("purchase_units") or []:
+            for auth in (unit.get("payments") or {}).get("authorizations") or []:
+                if auth.get("id") and auth.get("status") in ("CREATED", "PENDING", None):
+                    return str(auth["id"])
+        return ""
+
+    def capture(self, hold: PaymentHold, amount: int) -> None:
+        self._req("POST", f"/v2/payments/authorizations/{hold.external_id}/capture", {
+            "amount": {"currency_code": hold.currency.upper(), "value": paypal_value(amount, hold.currency)},
+            "final_capture": True,
+        })
+
+    def release(self, hold: PaymentHold) -> None:
+        self._req("POST", f"/v2/payments/authorizations/{hold.external_id}/void", None)
+
+    def remove(self, method: PaymentMethod) -> None:
+        if method.external_method_id:
+            try:
+                self._req("DELETE", f"/v3/vault/payment-tokens/{method.external_method_id}")
+            except PaymentError:
+                pass
+
+
 class PlannedProvider(PaymentProvider):
     def __init__(self, info: ProviderInfo):
         self.info = info
@@ -141,8 +310,8 @@ class PlannedProvider(PaymentProvider):
 
 PROVIDERS: Dict[str, PaymentProvider] = {
     "stripe": StripeProvider(),
-    "paypal": PlannedProvider(ProviderInfo("paypal", "PayPal", "wallet", "not_configured" if not settings.PAYPAL_CLIENT_ID else "planned", "PayPal Vault (save a PayPal account) + Orders API with intent=AUTHORIZE for holds (3-day honour period, 29-day authorisation). Needs PAYPAL_CLIENT_ID/SECRET and the adapter.")),
-    "venmo": PlannedProvider(ProviderInfo("venmo", "Venmo", "wallet", "planned", "Venmo is only available through PayPal (Braintree / PayPal Checkout with Venmo funding source, US only); holds follow the PayPal adapter.")),
+    "paypal": PayPalProvider(),
+    "venmo": PlannedProvider(ProviderInfo("venmo", "Venmo", "wallet", "planned", "Venmo is only available through PayPal (Braintree / PayPal Checkout with Venmo funding source, US only); holds follow the PayPal adapter, which is implemented.")),
     "cashapp": PlannedProvider(ProviderInfo("cashapp", "Cash App Pay", "wallet", "planned", "Cash App Pay is offered through Stripe (payment_method_types cashapp) or Block's own API; Stripe route can reuse the Stripe adapter once enabled on your Stripe account. Cash App Pay does not support authorisation holds - charges are immediate.", supports_holds=False)),
     "airwallex": PlannedProvider(ProviderInfo("airwallex", "Airwallex", "card", "planned", "Airwallex Payment Acceptance API: PaymentConsents (saved cards) + PaymentIntents with capture_method=manual. Needs API key + client id.")),
     "adyen": PlannedProvider(ProviderInfo("adyen", "Adyen", "card", "planned", "Adyen Checkout: tokenised shopperReference + /payments with manual capture (adjust/capture/cancel). Needs merchant account + API key.")),

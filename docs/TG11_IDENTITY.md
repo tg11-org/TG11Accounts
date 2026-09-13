@@ -362,6 +362,15 @@ backup.
   card numbers, CVVs, bank credentials or anything else that would put the
   identity database in PCI scope. Payment credentials live with the payment
   provider; FoxPay holds tokens, not cards.
+* **The wallet's providers.** Stripe (cards and Link) and PayPal (a PayPal
+  account the person approves once, vaulted by PayPal) are implemented; the
+  rest are registered with their integration notes so the data model, the API
+  and the UI are already final. An application places a *hold* through
+  `/api/v1/payments/...` with the `tg11.payments` scope and captures or releases
+  it later; TG11 stores the provider's token ids and a display label, nothing
+  else. PayPal additionally requires PayPal to switch Vault on for the merchant
+  account before an account can be saved — until they do, the wallet says so
+  instead of failing obscurely.
 * AI credentials are the user's own, encrypted at rest in the provider's vault
   (`ai_vault_credentials.secret_blob`, versioned key). No operator keys are
   ever placed in an application, and every AI call uses the user's own

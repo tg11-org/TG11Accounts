@@ -226,6 +226,19 @@ def wallet_stripe_complete(setup_intent: str = "", redirect_status: str = "", db
     return redirect("/wallet?msg=Payment+method+added")
 
 
+@router.get("/wallet/paypal/complete")
+def wallet_paypal_complete(approval_token_id: str = "", db: Session = Depends(get_db), user: User = Depends(current_user)):
+    if not approval_token_id:
+        return redirect("/wallet?err=PayPal+setup+was+not+completed")
+    try:
+        m = payments.get_provider("paypal").complete_setup(db, user, {"approval_token_id": approval_token_id})
+        if not any(x.is_default for x in payments.list_methods(db, user)):
+            payments.set_default(db, user, m)
+    except payments.PaymentError as exc:
+        return redirect(f"/wallet?err={exc}")
+    return redirect("/wallet?msg=PayPal+account+added")
+
+
 @router.post("/wallet/methods/{method_id}/default", dependencies=[Depends(csrf)])
 def wallet_default(method_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     m = payments.get_method(db, user, method_id)

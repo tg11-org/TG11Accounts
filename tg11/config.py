@@ -77,6 +77,14 @@ class Settings(BaseSettings):
         return bool(self.STRIPE_SECRET_KEY and self.STRIPE_PUBLISHABLE_KEY)
 
     @property
+    def paypal_configured(self) -> bool:
+        return bool(self.PAYPAL_CLIENT_ID and self.PAYPAL_CLIENT_SECRET)
+
+    @property
+    def paypal_api(self) -> str:
+        return "https://api-m.paypal.com" if self.PAYPAL_ENV.lower() == "live" else "https://api-m.sandbox.paypal.com"
+
+    @property
     def issuer(self) -> str:
         return self.TG11_ISSUER.rstrip("/")
 

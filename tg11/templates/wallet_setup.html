@@ -13,6 +13,9 @@ document.getElementById('pay-form').addEventListener('submit', async (e) => {
   if (error) { const el = document.getElementById('pay-error'); el.textContent = error.message; el.hidden = false; document.getElementById('submit').disabled = false; }
 });
 </script>
+{% elif setup.mode == 'redirect' %}
+<p>You approve this at {{ provider.name }} and come straight back. TG11 keeps only the reference {{ provider.name }} gives it - no card numbers, no password.</p>
+<p><a href="{{ setup.url }}"><button class="primary" type="button">Continue to {{ provider.name }}</button></a></p>
 {% else %}<p class="muted">This provider does not have an interactive setup yet.</p>{% endif %}
 <p class="muted small"><a href="/wallet">Back to wallet</a></p></div>
 {% endblock %}

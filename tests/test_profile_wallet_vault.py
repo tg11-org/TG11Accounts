@@ -173,3 +173,140 @@ def test_hold_lifecycle_with_fake_provider(client, capsys, monkeypatch):
     s2 = re.search(r"client_secret=(\S+)", capsys.readouterr().out).group(1)
     assert client.get(f"/api/v1/payments/holds/{hid}", auth=("other", s2)).status_code == 404
     assert calls == [("auth", 1500), ("capture", 1000)]
+
+
+# --- PayPal in the wallet ---------------------------------------------------------
+
+class FakePayPal:
+    """PayPal's REST API, as far as the provider is concerned."""
+
+    def __init__(self):
+        self.calls = []
+        self.deleted = []
+
+    def __call__(self, method, path, body=None):
+        self.calls.append((method, path, body))
+        if path == "/v3/vault/setup-tokens":
+            return {"id": "SETUP-1", "status": "PAYER_ACTION_REQUIRED",
+                    "links": [{"rel": "approve", "href": "https://www.paypal.com/agreements/approve?ba_token=SETUP-1"}]}
+        if path == "/v3/vault/payment-tokens":
+            assert body["payment_source"]["token"] == {"id": "SETUP-1", "type": "SETUP_TOKEN"}
+            return {"id": "TOKEN-1", "customer": {"id": "CUST-1"},
+                    "payment_source": {"paypal": {"email_address": "payer@example.com", "account_id": "PAYER-1"}}}
+        if path == "/v2/checkout/orders":
+            return {"id": "ORDER-1", "status": "COMPLETED", "purchase_units": [
+                {"payments": {"authorizations": [{"id": "AUTH-1", "status": "CREATED"}]}}]}
+        if path.startswith("/v2/payments/authorizations/"):
+            return {}
+        if method == "DELETE":
+            self.deleted.append(path)
+            return {}
+        raise AssertionError(f"unexpected PayPal call: {method} {path}")
+
+
+def _paypal(monkeypatch, fake=None):
+    from tg11.config import settings
+
+    provider = payments.PayPalProvider()
+    fake = fake or FakePayPal()
+    monkeypatch.setattr(provider, "_req", fake)
+    provider.info.status = "available"
+    monkeypatch.setitem(payments.PROVIDERS, "paypal", provider)
+    monkeypatch.setattr(settings, "PAYPAL_CLIENT_ID", "test-client", raising=False)
+    monkeypatch.setattr(settings, "PAYPAL_CLIENT_SECRET", "test-secret", raising=False)
+    return fake
+
+
+def test_paypal_account_is_saved_through_the_approval_round_trip(client, monkeypatch):
+    fake = _paypal(monkeypatch)
+    csrf = _login(client)
+
+    page = client.post("/wallet/add/paypal", data={"csrf_token": csrf})
+    assert "Continue to PayPal" in page.text
+    assert "https://www.paypal.com/agreements/approve?ba_token=SETUP-1" in page.text
+    context = fake.calls[0][2]["payment_source"]["paypal"]["experience_context"]
+    assert context["return_url"] == "http://accounts.test/wallet/paypal/complete"
+    assert context["shipping_preference"] == "NO_SHIPPING"
+
+    assert client.get("/wallet/paypal/complete", follow_redirects=False).headers["location"].endswith("err=PayPal+setup+was+not+completed")
+    r = client.get("/wallet/paypal/complete?approval_token_id=SETUP-1", follow_redirects=False)
+    assert r.status_code == 303 and "msg=PayPal+account+added" in r.headers["location"]
+
+    db = SessionLocal()
+    method = db.scalar(select(PaymentMethod).where(PaymentMethod.provider == "paypal"))
+    assert method.label == "PayPal (payer@example.com)"
+    assert method.external_method_id == "TOKEN-1" and method.external_customer_id == "CUST-1"
+    assert method.is_default and method.status == "active"
+    assert "payer@example.com" in client.get("/wallet").text
+    db.close()
+
+
+def test_paypal_hold_is_authorised_captured_and_the_token_is_deleted_on_removal(client, monkeypatch):
+    fake = _paypal(monkeypatch)
+    _login(client)
+    client.get("/wallet/paypal/complete?approval_token_id=SETUP-1", follow_redirects=False)
+
+    db = SessionLocal()
+    user = db.scalar(select(User))
+    method = db.scalar(select(PaymentMethod).where(PaymentMethod.provider == "paypal"))
+    hold = payments.place_hold(db, user, "shop", 2500, "USD", "Order 1001", "order-1001", method=method)
+    assert hold.status == "authorized" and hold.external_id == "AUTH-1"
+    order = [c for c in fake.calls if c[1] == "/v2/checkout/orders"][0][2]
+    assert order["intent"] == "AUTHORIZE"
+    assert order["payment_source"]["paypal"]["vault_id"] == "TOKEN-1"
+    assert order["purchase_units"][0]["amount"] == {"currency_code": "USD", "value": "25.00"}
+
+    payments.capture_hold(db, hold, 2000)
+    assert hold.status == "captured" and hold.captured_amount == 2000
+    captured = [c for c in fake.calls if c[1].endswith("/capture")][0][2]
+    assert captured["amount"]["value"] == "20.00" and captured["final_capture"] is True
+
+    payments.remove_method(db, user, method)
+    assert fake.deleted == ["/v3/vault/payment-tokens/TOKEN-1"]
+    assert method.status == "removed"
+    db.commit()
+    db.close()
+
+
+def test_paypal_holds_can_be_released_and_failures_are_reported_not_raised(client, monkeypatch):
+    fake = _paypal(monkeypatch)
+    _login(client)
+    client.get("/wallet/paypal/complete?approval_token_id=SETUP-1", follow_redirects=False)
+    db = SessionLocal()
+    user = db.scalar(select(User))
+    method = db.scalar(select(PaymentMethod).where(PaymentMethod.provider == "paypal"))
+
+    hold = payments.place_hold(db, user, "shop", 500, "USD", "Deposit", "dep-1", method=method)
+    payments.release_hold(db, hold)
+    assert hold.status == "released"
+    assert any(c[1].endswith("/void") for c in fake.calls)
+
+    def refuse(method_, path, body=None):
+        if path == "/v2/checkout/orders":
+            raise payments.PaymentError("Payer's account is restricted")
+        return fake(method_, path, body)
+
+    monkeypatch.setattr(payments.PROVIDERS["paypal"], "_req", refuse)
+    failed = payments.place_hold(db, user, "shop", 500, "USD", "Deposit", "dep-2", method=method)
+    assert failed.status == "failed" and "restricted" in failed.error
+    db.commit()
+    db.close()
+
+
+def test_money_crosses_paypal_in_the_units_each_side_counts_in():
+    assert payments.paypal_value(2500, "USD") == "25.00"
+    assert payments.paypal_value(2500, "JPY") == "2500"
+    assert payments.paypal_value(250000, "HUF") == "2500"
+    assert payments.paypal_value(2500, "KRW") == "2500"
+    assert payments.paypal_value(2500000, "KWD") == "2500.000"
+
+
+def test_paypal_says_what_to_do_when_vaulting_is_not_enabled_on_the_account(client, monkeypatch):
+    def refuse(method, path, body=None):
+        raise payments.PaymentError("The API caller or the merchant on whose behalf the API call is initiated is not allowed to vault the given source. Please contact PayPal customer support for assistance.")
+
+    _paypal(monkeypatch, fake=refuse)
+    csrf = _login(client)
+    r = client.post("/wallet/add/paypal", data={"csrf_token": csrf}, follow_redirects=False)
+    assert r.status_code == 303
+    assert "Vault" in r.headers["location"] and "PayPal+support" in r.headers["location"].replace("%20", "+")
