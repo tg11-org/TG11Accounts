@@ -1,0 +1,45 @@
+{% extends "base.html" %}{% block wrapclass %}wide{% endblock %}{% block title %}Connected apps · {{ site_name }}{% endblock %}{% block content %}
+<div class="panel">
+<h1>Connected applications</h1>
+<p class="muted small">Where your TG11 identity has been used. {{ used_count }} of {{ rows|length }} registered app{{ "" if rows|length == 1 else "s" }} {{ "has" if used_count == 1 else "have" }} been connected.</p>
+
+{% for r in rows %}
+<div class="app" style="margin-bottom:.7rem">
+  <div class="row" style="justify-content:space-between;align-items:flex-start;gap:.6rem">
+    <div>
+      <b>{% if r.client %}{{ r.client.icon }} {{ r.client.name }}{% else %}{{ r.application }}{% endif %}</b>
+      {% if r.link %}<span class="tag ok">linked</span>{% elif r.used %}<span class="tag">signed in</span>{% else %}<span class="muted small">never used</span>{% endif %}
+      {% if r.live_tokens %}<span class="tag">{{ r.live_tokens }} active token{{ "" if r.live_tokens == 1 else "s" }}</span>{% endif %}
+      {% if r.client and r.client.description %}<div class="muted small">{{ r.client.description }}</div>{% endif %}
+
+      <div class="muted small" style="margin-top:.35rem">
+        {% if r.link %}
+          Linked {{ r.link.linked_at.strftime('%Y-%m-%d') }}{% if r.link.migration_source %} · {{ r.link.migration_source }}{% endif %}{% if r.link.legacy_id %} · their account id <code>{{ r.link.legacy_id }}</code>{% endif %}<br>
+        {% endif %}
+        {% if r.last_used %}Last signed in {{ r.last_used.strftime('%Y-%m-%d %H:%M') }} UTC{% else %}{% if not r.link %}No sign-in recorded{% endif %}{% endif %}
+        {% if r.consent %}<br>Can see: {{ r.consent.scope }}{% endif %}
+      </div>
+    </div>
+    <div class="row" style="gap:.35rem;flex-wrap:wrap;justify-content:flex-end">
+      {% if r.client and r.client.home_url %}<a class="btn small" href="{{ r.client.home_url }}">Open</a>{% endif %}
+      {% if r.client and r.client.link_url and not r.link %}<a class="btn small primary" href="{{ r.client.link_url }}">Link my account</a>{% endif %}
+      {% if r.used and r.client %}
+        <form method="post" action="/connections/revoke" style="display:inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="client_id" value="{{ r.client.client_id }}">
+          <button class="btn small" type="submit">Revoke access</button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% else %}<p class="muted">No applications are registered yet.</p>{% endfor %}
+
+<p class="muted small" style="margin-top:1rem">
+  Revoking access withdraws consent and kills that application's TG11 tokens. It does
+  <strong>not</strong> end a session you already have on the application's own site — each app keeps
+  its own sign-in — so sign out there too if that is what you want.
+</p>
+<p class="muted small"><a href="/account">Back to your account</a></p>
+</div>
+{% endblock %}

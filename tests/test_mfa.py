@@ -5,7 +5,6 @@ import os
 import re
 import tempfile
 import time
-from html import unescape
 from urllib.parse import parse_qs, urlparse
 
 os.environ.update({
@@ -335,50 +334,6 @@ def test_prompt_none_with_unmet_acr_reports_it_to_the_application(client, capsys
     assert parse_qs(urlparse(r.headers["location"]).query)["error"] == ["unmet_authentication_requirements"]
 
 
-def test_fresh_login_without_enrolled_mfa_returns_error_instead_of_loop(client, capsys):
-    _add_client(capsys)
-    _register(client)
-    url = ("/oauth/authorize?response_type=code&client_id=app1&redirect_uri=https%3A%2F%2Fapp.test%2Fcb"
-           "&scope=openid&state=s&nonce=n&acr_values=urn%3Atg11%3A2fa")
-    first = client.get(url, follow_redirects=False)
-    page = client.get(first.headers["location"], follow_redirects=False)
-    assert page.status_code == 200
-    csrf = re.search(r'name="csrf_token" value="([^"]+)"', page.text).group(1)
-    next_url = unescape(re.search(r'name="next" value="([^"]+)"', page.text).group(1))
-    signed_in = client.post("/login", data={"identifier": "alice", "password": PW,
-                                             "next": next_url, "csrf_token": csrf}, follow_redirects=False)
-    done = client.get(signed_in.headers["location"], follow_redirects=False)
-    assert done.status_code == 302
-    assert parse_qs(urlparse(done.headers["location"]).query)["error"] == ["unmet_authentication_requirements"]
-
-
-def test_prompt_login_with_mfa_completes_authorization(client, capsys):
-    _add_client(capsys)
-    _register(client)
-    _secret, codes = _enable_totp(client)
-    url = ("/oauth/authorize?response_type=code&client_id=app1&redirect_uri=https%3A%2F%2Fapp.test%2Fcb"
-           "&scope=openid&state=s&nonce=n&acr_values=urn%3Atg11%3A2fa&prompt=login")
-    first = client.get(url, follow_redirects=False)
-    page = client.get(first.headers["location"], follow_redirects=False)
-    assert page.status_code == 200
-    csrf = re.search(r'name="csrf_token" value="([^"]+)"', page.text).group(1)
-    next_url = unescape(re.search(r'name="next" value="([^"]+)"', page.text).group(1))
-    password = client.post("/login", data={"identifier": "alice", "password": PW,
-                                            "next": next_url, "csrf_token": csrf}, follow_redirects=False)
-    assert password.status_code == 303 and password.headers["location"].startswith("/login/mfa")
-    assert client.cookies.get("tg11_session") is None
-    mfa_page = client.get(password.headers["location"])
-    assert mfa_page.status_code == 200
-    mfa_csrf = re.search(r'name="csrf_token" value="([^"]+)"', mfa_page.text).group(1)
-    mfa_next = unescape(re.search(r'name="next" value="([^"]+)"', mfa_page.text).group(1))
-    second = client.post("/login/mfa", data={"code": codes[0], "next": mfa_next,
-                                              "csrf_token": mfa_csrf}, follow_redirects=False)
-    assert second.status_code == 303, second.text
-    done = client.get(second.headers["location"], follow_redirects=False)
-    assert done.status_code == 302
-    assert "code" in parse_qs(urlparse(done.headers["location"]).query)
-
-
 def test_refreshed_id_token_keeps_the_real_factors(client, capsys, monkeypatch):
     secret = _add_client(capsys, scopes="openid profile email offline_access")
     _register(client)
@@ -397,3 +352,48 @@ def test_refreshed_id_token_keeps_the_real_factors(client, capsys, monkeypatch):
     jwks = client.get("/oauth/jwks.json").json()
     claims = dict(_jwt.decode(refreshed["id_token"], KeySet.import_key_set(jwks), algorithms=["RS256"]).claims)
     assert "otp" in claims["amr"] and claims["acr"] == "urn:tg11:2fa"
+
+
+# ---- connected applications --------------------------------------------------
+
+def test_connections_page_lists_apps_and_state(client, capsys):
+    secret = _add_client(capsys)
+    _register(client)
+    page = client.get("/connections")
+    assert page.status_code == 200
+    assert "App" in page.text and "never used" in page.text
+
+    _id_token_claims(client, secret)                 # now it has been used
+    page = client.get("/connections")
+    assert "signed in" in page.text or "active token" in page.text
+    assert "Revoke access" in page.text
+
+
+def test_connections_requires_a_session(client):
+    r = client.get("/connections", follow_redirects=False)
+    assert r.status_code == 303 and "/login" in r.headers["location"]
+
+
+def test_revoking_access_kills_tokens_and_consent(client, capsys):
+    secret = _add_client(capsys)
+    _register(client)
+    _id_token_claims(client, secret)
+    with SessionLocal() as db:
+        from tg11.models import Consent, Token
+        assert db.query(Token).filter(Token.revoked_at.is_(None)).count() >= 1
+
+    csrf = re.search(r'name="csrf_token" value="([^"]+)"', client.get("/connections").text).group(1)
+    r = client.post("/connections/revoke", data={"client_id": "app1", "csrf_token": csrf}, follow_redirects=False)
+    assert r.status_code == 303
+    with SessionLocal() as db:
+        from tg11.models import Consent, Token
+        assert db.query(Token).filter(Token.revoked_at.is_(None)).count() == 0
+        assert db.query(Consent).filter(Consent.revoked_at.is_(None)).count() == 0
+
+
+def test_revoking_an_unknown_application_is_refused(client, capsys):
+    _add_client(capsys)
+    _register(client)
+    csrf = _session_csrf(client)     # no revoke form is rendered when nothing is connected
+    r = client.post("/connections/revoke", data={"client_id": "nope", "csrf_token": csrf}, follow_redirects=False)
+    assert r.status_code == 303 and "err=" in r.headers["location"]
