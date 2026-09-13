@@ -1,0 +1,11 @@
+{% extends base_template %}
+{% block title %}Sign-in problem{% endblock %}
+{% block content %}
+  <h1>We could not finish that sign-in</h1>
+  <p>{{ message }}</p>
+  <p>
+    {% if retry %}<a class="btn" href="{% url 'tg11_auth:login' %}">Try again</a>{% endif %}
+    <a class="btn" href="{{ home_url }}">Back to the site</a>
+  </p>
+  <p class="muted">Nothing was changed on your account.</p>
+{% endblock %}

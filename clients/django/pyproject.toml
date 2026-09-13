@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tg11-auth"
+version = "0.1.0"
+description = "TG11 ecosystem OpenID Connect relying party for Django"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "AGPL-3.0-or-later" }
+authors = [{ name = "TG11" }]
+dependencies = [
+    "Django>=4.2",
+    "httpx>=0.27",
+    "joserfc>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-django>=4.8"]
+
+[tool.setuptools.packages.find]
+include = ["tg11_auth*"]
+
+[tool.setuptools.package-data]
+tg11_auth = ["templates/tg11_auth/*.html"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "tests.settings"
+python_files = ["test_*.py"]

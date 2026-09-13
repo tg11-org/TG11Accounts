@@ -1,0 +1,14 @@
+{% extends base_template %}
+{% block title %}Link your TG11 account{% endblock %}
+{% block content %}
+  <h1>This email already has an account here</h1>
+  <p>{{ message }}</p>
+  <p>
+    <a class="btn" href="{{ login_url }}">Sign in the usual way</a>
+    <a class="btn" href="{{ home_url }}">Cancel</a>
+  </p>
+  <p class="muted">
+    Once you are signed in, use <strong>Link TG11</strong> in your account settings. We never merge two
+    accounts on an email address alone &mdash; that is what keeps someone else from claiming yours.
+  </p>
+{% endblock %}

@@ -1,0 +1,21 @@
+{% comment %}
+Fallback wrapper used when the application has not set TG11_AUTH_BASE_TEMPLATE.
+Set that to your own base template and these pages inherit your site's chrome.
+{% endcomment %}<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}TG11 sign-in{% endblock %}</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0;
+         display: grid; place-items: center; min-height: 100vh; padding: 1.5rem; }
+  .card { max-width: 34rem; width: 100%; border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+          border-radius: 14px; padding: 1.5rem 1.75rem; }
+  h1 { font-size: 1.25rem; margin: 0 0 .75rem; }
+  p { margin: 0 0 1rem; }
+  a.btn, button.btn { display: inline-block; border-radius: 10px; padding: .55rem 1rem; text-decoration: none;
+          border: 1px solid color-mix(in srgb, currentColor 25%, transparent); background: transparent;
+          color: inherit; font: inherit; cursor: pointer; }
+  .muted { opacity: .7; font-size: .9rem; }
+</style>
+</head><body><main class="card">{% block content %}{% endblock %}</main></body></html>

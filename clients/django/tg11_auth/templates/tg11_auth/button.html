@@ -1,0 +1,19 @@
+{% comment %}
+  {% include "tg11_auth/button.html" %}                       - on a login page
+  {% include "tg11_auth/button.html" with link_mode=True %}    - on account settings
+  Pass next="/somewhere/" to control where the user lands.
+{% endcomment %}
+{% if tg11_configured %}
+  {% if link_mode %}
+    {% if tg11_linked %}
+      <form method="post" action="{% url 'tg11_auth:unlink' %}">{% csrf_token %}
+        {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+        <button class="btn" type="submit">Unlink TG11</button>
+      </form>
+    {% else %}
+      <a class="btn" href="{% url 'tg11_auth:link' %}{% if next %}?next={{ next|urlencode }}{% endif %}">Link my TG11 account</a>
+    {% endif %}
+  {% else %}
+    <a class="btn" href="{% url 'tg11_auth:login' %}{% if next %}?next={{ next|urlencode }}{% endif %}">Continue with TG11</a>
+  {% endif %}
+{% endif %}
