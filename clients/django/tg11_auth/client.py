@@ -43,10 +43,31 @@ class Claims:
     preferred_username: str = ""
     name: str = ""
     account_state: str = ""
+    #: how the person authenticated at TG11: ["pwd"], ["pwd", "otp"], …
+    amr: list = field(default_factory=list)
+    #: authentication context class: urn:tg11:1fa or urn:tg11:2fa
+    acr: str = ""
+    #: unix time of that authentication, for step-up freshness checks
+    auth_time: int = 0
     raw: Dict[str, Any] = field(default_factory=dict)
     access_token: str = ""
     refresh_token: str = ""
     scope: str = ""
+
+    @property
+    def used_second_factor(self) -> bool:
+        """True when TG11 says a second factor was actually used.
+
+        `acr` is checked as well as `amr` so a provider that only sets the
+        context class still reports correctly.
+        """
+        return bool({"otp", "recovery", "hwk", "swk", "mfa"} & set(self.amr)) or self.acr.endswith(":2fa")
+
+    def authenticated_within(self, seconds: int) -> bool:
+        """For step-up: was this sign-in recent enough to act on?"""
+        import time as _time
+
+        return bool(self.auth_time) and (_time.time() - self.auth_time) <= seconds
 
     @property
     def is_active_account(self) -> bool:
@@ -119,7 +140,8 @@ class OIDCClient:
             "code_challenge": challenge,
         }
 
-    def authorization_url(self, flow: Dict[str, str], *, prompt: Optional[str] = None, login_hint: str = "") -> str:
+    def authorization_url(self, flow: Dict[str, str], *, prompt: Optional[str] = None, login_hint: str = "",
+                          acr_values: str = "", max_age: Optional[int] = None) -> str:
         q = {
             "response_type": "code",
             "client_id": self.client_id,
@@ -134,6 +156,10 @@ class OIDCClient:
             q["prompt"] = prompt
         if login_hint:
             q["login_hint"] = login_hint
+        if acr_values:
+            q["acr_values"] = acr_values
+        if max_age is not None:
+            q["max_age"] = int(max_age)
         return f"{self.metadata['authorization_endpoint']}?{urlencode(q)}"
 
     # ---- token exchange + validation ------------------------------------
@@ -167,6 +193,9 @@ class OIDCClient:
             preferred_username=str(claims.get("preferred_username") or ""),
             name=str(claims.get("name") or ""),
             account_state=str(claims.get("account_state") or ""),
+            amr=[str(m) for m in (claims.get("amr") or [])] if isinstance(claims.get("amr"), list) else ([str(claims["amr"])] if claims.get("amr") else []),
+            acr=str(claims.get("acr") or ""),
+            auth_time=int(claims.get("auth_time") or 0),
             raw=dict(claims),
             access_token=str(tokens.get("access_token") or ""),
             refresh_token=str(tokens.get("refresh_token") or ""),

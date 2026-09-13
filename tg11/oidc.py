@@ -19,9 +19,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .models import AuthorizationCode, Consent, OAuthClient, SigningKey, Token, User, utcnow
+from .models import AuthorizationCode, Consent, OAuthClient, SigningKey, Token, User, UserSession, utcnow
 from .passwords import verify_password
 from .tokens import generate_token, hash_token
+
+#: Authentication context: what the person actually proved at sign-in. An
+#: application that needs a second factor requires ACR_MFA (or `otp` in `amr`)
+#: rather than trusting a bare session.
+ACR_SINGLE = "urn:tg11:1fa"
+ACR_MFA = "urn:tg11:2fa"
 
 SUPPORTED_SCOPES = ["openid", "profile", "email", "phone", "tg11.profile", "tg11.ai", "tg11.payments", "offline_access"]
 
@@ -78,7 +84,8 @@ def discovery() -> Dict:
         "id_token_signing_alg_values_supported": ["RS256"],
         "scopes_supported": SUPPORTED_SCOPES,
         "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none"],
-        "claims_supported": ["sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "email", "email_verified", "preferred_username", "name", "picture", "website", "phone_number", "phone_number_verified", "tg11_username", "tg11_bio", "tg11_header_image", "account_state", "created_at"],
+        "acr_values_supported": [ACR_MFA, ACR_SINGLE],
+        "claims_supported": ["sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "amr", "acr", "email", "email_verified", "preferred_username", "name", "picture", "website", "phone_number", "phone_number_verified", "tg11_username", "tg11_bio", "tg11_header_image", "account_state", "created_at"],
         "code_challenge_methods_supported": ["S256"],
         "claims_parameter_supported": False,
         "request_parameter_supported": False,
@@ -139,9 +146,9 @@ def grant_consent(db: Session, user: User, client: OAuthClient, scopes: List[str
 
 # --- authorization code -------------------------------------------------------
 
-def issue_code(db: Session, user: User, client: OAuthClient, redirect_uri: str, scopes: List[str], nonce: str, code_challenge: str, method: str, session_id: str) -> str:
+def issue_code(db: Session, user: User, client: OAuthClient, redirect_uri: str, scopes: List[str], nonce: str, code_challenge: str, method: str, session_id: str, amr: str = "pwd", auth_time=None) -> str:
     code = generate_token(32)
-    db.add(AuthorizationCode(code_hash=hash_token(code), client_id=client.client_id, user_id=user.id, session_id=session_id, redirect_uri=redirect_uri, scope=" ".join(scopes), nonce=nonce or "", code_challenge=code_challenge or "", code_challenge_method=method or "", expires_at=utcnow() + timedelta(seconds=settings.TG11_CODE_TTL)))
+    db.add(AuthorizationCode(code_hash=hash_token(code), client_id=client.client_id, user_id=user.id, session_id=session_id, redirect_uri=redirect_uri, scope=" ".join(scopes), nonce=nonce or "", code_challenge=code_challenge or "", code_challenge_method=method or "", amr=amr or "pwd", auth_time=auth_time or utcnow(), expires_at=utcnow() + timedelta(seconds=settings.TG11_CODE_TTL)))
     db.flush()
     return code
 
@@ -210,21 +217,23 @@ def user_claims(user: User, scopes: List[str]) -> Dict:
     return {k: v for k, v in claims.items() if v is not None}
 
 
-def id_token(db: Session, user: User, client: OAuthClient, scopes: List[str], nonce: str, auth_time) -> str:
+def id_token(db: Session, user: User, client: OAuthClient, scopes: List[str], nonce: str, auth_time, amr: str = "pwd") -> str:
     key = ensure_signing_key(db)
     now = int(time.time())
-    claims = {"iss": settings.issuer, "aud": client.client_id, "iat": now, "exp": now + settings.TG11_ID_TOKEN_TTL, "auth_time": int(auth_time.timestamp())}
+    methods = [m for m in (amr or "pwd").split() if m]
+    claims = {"iss": settings.issuer, "aud": client.client_id, "iat": now, "exp": now + settings.TG11_ID_TOKEN_TTL, "auth_time": int(auth_time.timestamp()),
+              "amr": methods, "acr": ACR_MFA if ({"otp", "recovery"} & set(methods)) else ACR_SINGLE}
     if nonce:
         claims["nonce"] = nonce
     claims.update(user_claims(user, scopes))
     return jwt.encode({"alg": "RS256", "kid": key.kid, "typ": "JWT"}, claims, _rsa_key(key))
 
 
-def token_response(db: Session, user: User, client: OAuthClient, scopes: List[str], nonce: str, auth_time, session_id: str, with_refresh: bool) -> Dict:
+def token_response(db: Session, user: User, client: OAuthClient, scopes: List[str], nonce: str, auth_time, session_id: str, with_refresh: bool, amr: str = "pwd") -> Dict:
     scope = " ".join(scopes)
     refresh = _mint(db, "refresh", user.id, client.client_id, scope, session_id, settings.TG11_REFRESH_TOKEN_TTL) if with_refresh else None
     access = _mint(db, "access", user.id, client.client_id, scope, session_id, settings.TG11_ACCESS_TOKEN_TTL)
-    out = {"access_token": access, "token_type": "Bearer", "expires_in": settings.TG11_ACCESS_TOKEN_TTL, "scope": scope, "id_token": id_token(db, user, client, scopes, nonce, auth_time)}
+    out = {"access_token": access, "token_type": "Bearer", "expires_in": settings.TG11_ACCESS_TOKEN_TTL, "scope": scope, "id_token": id_token(db, user, client, scopes, nonce, auth_time, amr)}
     if refresh:
         out["refresh_token"] = refresh
     return out
@@ -239,7 +248,9 @@ def refresh(db: Session, client: OAuthClient, refresh_token: str) -> Dict:
         raise OAuthError("invalid_grant", "user inactive")
     row.revoked_at = utcnow()  # rotation
     scopes = row.scope.split()
-    return token_response(db, user, client, scopes, "", utcnow(), row.session_id, with_refresh=True)
+    sess = db.get(UserSession, row.session_id) if row.session_id else None
+    auth_time = sess.created_at if sess is not None else utcnow()
+    return token_response(db, user, client, scopes, "", auth_time, row.session_id, with_refresh=True, amr=(sess.amr if sess is not None else "pwd"))
 
 
 def resolve_access_token(db: Session, bearer: str) -> Tuple[User, Token]:

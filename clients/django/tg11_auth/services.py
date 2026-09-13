@@ -62,6 +62,17 @@ class AccountDisabled(AuthError):
     pass
 
 
+class SecondFactorRequired(AuthError):
+    """TG11 signed them in with a password only, and this application wants a
+    second factor. The view sends them back through TG11 asking for one."""
+
+    def __init__(self):
+        super().__init__(
+            "This application requires two-factor authentication. Turn it on for your TG11 account, "
+            "then sign in again."
+        )
+
+
 def _user_by_email(email: str):
     User = get_user_model()
     if not email:
@@ -174,6 +185,8 @@ def resolve_user(claims: Claims, *, request=None) -> Tuple[Any, bool, TG11Identi
     """(user, created, link) for a completed OIDC login.  Raises AuthError."""
     if conf.require_active_state() and not claims.is_active_account:
         raise AccountDisabled(f"That TG11 account is {claims.account_state}; sign in at the TG11 account page to resolve it.")
+    if conf.require_mfa() and not claims.used_second_factor:
+        raise SecondFactorRequired()
 
     app = conf.application()
     link = TG11IdentityLink.objects.select_related("user").filter(subject=claims.subject, application=app).first()

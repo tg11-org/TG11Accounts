@@ -83,6 +83,39 @@ class UserSession(Base):
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     user_agent: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     ip_address: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    #: authentication methods used to create this session, space separated
+    #: ("pwd", "pwd otp", "pwd recovery") - surfaced to applications as `amr`
+    amr: Mapped[str] = mapped_column(String(64), default="pwd", nullable=False)
+
+
+class TOTPDevice(Base):
+    """A confirmed authenticator app. The secret is encrypted with the vault key,
+    AAD-bound to the user, and `last_used_step` stops a code being replayed
+    inside its own 30-second window."""
+
+    __tablename__ = "totp_devices"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    label: Mapped[str] = mapped_column(String(64), default="Authenticator", nullable=False)
+    secret_blob: Mapped[bytes] = mapped_column(nullable=False)
+    key_version: Mapped[int] = mapped_column(default=1, nullable=False)
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_used_step: Mapped[int] = mapped_column(default=0, nullable=False)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class RecoveryCode(Base):
+    """Single-use backup codes, stored as hashes and shown to the user once."""
+
+    __tablename__ = "recovery_codes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    code_hash: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class ActionToken(Base):
@@ -139,6 +172,7 @@ class AuthorizationCode(Base):
     code_challenge: Mapped[str] = mapped_column(String(128), default="", nullable=False)
     code_challenge_method: Mapped[str] = mapped_column(String(8), default="", nullable=False)
     auth_time: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    amr: Mapped[str] = mapped_column(String(64), default="pwd", nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 

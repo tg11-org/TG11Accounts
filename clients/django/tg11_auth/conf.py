@@ -20,6 +20,9 @@ Optional behaviour:
     TG11_AUTH_REQUIRE_ACTIVE_STATE      True   refuse suspended/limited TG11 accounts
     TG11_AUTH_PROFILE_HOOK              ""     "myapp.auth.on_tg11_login"
     TG11_AUTH_LOGIN_GUARD               ""     "myapp.auth.refuse_if_local_2fa"
+    TG11_AUTH_REQUIRE_MFA               False  refuse sign-ins TG11 did not
+                                               second-factor (and ask for one)
+    TG11_AUTH_MAX_AGE                   None   seconds; re-authenticate if older
     TG11_AUTH_LOGIN_REDIRECT            LOGIN_REDIRECT_URL
     TG11_AUTH_POST_LOGOUT_REDIRECT      "/"
     TG11_AUTH_FEDERATION_ID             ""     stamped on link rows (FurryParty…)
@@ -81,6 +84,20 @@ def login_redirect() -> str:
 
 def post_logout_redirect() -> str:
     return str(get("TG11_AUTH_POST_LOGOUT_REDIRECT") or "/")
+
+
+ACR_MFA = "urn:tg11:2fa"
+
+
+def require_mfa() -> bool:
+    """When true the application only accepts a TG11 sign-in that used a second
+    factor, and asks the provider for one up front (acr_values)."""
+    return bool(get("TG11_AUTH_REQUIRE_MFA", False))
+
+
+def max_age() -> Optional[int]:
+    value = get("TG11_AUTH_MAX_AGE", None)
+    return int(value) if value not in (None, "") else None
 
 
 def login_guard() -> Optional[Any]:

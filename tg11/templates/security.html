@@ -1,0 +1,47 @@
+{% extends "base.html" %}{% block title %}Security · {{ site_name }}{% endblock %}{% block content %}
+<div class="panel"><h1>Two-factor authentication</h1>
+{% if error %}<div class="flash bad">{{ error }}</div>{% endif %}
+{% if notice %}<div class="flash ok">{{ notice }}</div>{% endif %}
+
+{% if codes %}
+  <h2>Your recovery codes</h2>
+  <p class="muted small">These are shown once. Save them somewhere you can reach without your phone — each works a single time.</p>
+  <pre style="background:#0e1430;border:1px solid var(--line);border-radius:.6rem;padding:.8rem;line-height:1.7">{% for c in codes %}{{ c }}
+{% endfor %}</pre>
+{% endif %}
+
+{% if device %}
+  <p><span class="tag ok">enabled</span> Added {{ device.confirmed_at.strftime('%Y-%m-%d') }}{% if device.last_used_at %} · last used {{ device.last_used_at.strftime('%Y-%m-%d %H:%M') }} UTC{% endif %}</p>
+  <p class="muted small">Applications you sign in to are told that you used a second factor, so the ones that require it will let you in.</p>
+  {% if not codes %}<p class="muted small">Recovery codes left: <strong>{{ codes_left }}</strong></p>{% endif %}
+
+  <h2>New recovery codes</h2>
+  <form method="post" action="/account/security/recovery" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label>Confirm your password <input name="password" type="password" required autocomplete="current-password"></label>
+  <button type="submit">Generate new codes</button></form>
+
+  <h2>Turn it off</h2>
+  <p class="muted small">Needs your password and a current code, so a borrowed session cannot remove it.</p>
+  <form method="post" action="/account/security/disable" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label>Password <input name="password" type="password" required autocomplete="current-password"></label>
+  <label>Current code <input name="code" inputmode="numeric" autocomplete="one-time-code" required></label>
+  <button type="submit">Disable two-factor authentication</button></form>
+
+{% elif secret %}
+  <h2>Step 1 · scan this</h2>
+  <div style="background:#fff;padding:.6rem;border-radius:.6rem;display:inline-block;max-width:240px">{{ qr_svg|safe }}</div>
+  <p class="muted small">Can't scan? Enter this key by hand: <code>{{ secret }}</code></p>
+  <h2>Step 2 · confirm</h2>
+  <p class="muted small">Nothing changes until a live code proves the app is set up.</p>
+  <form method="post" action="/account/security/confirm" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label>Six-digit code <input name="code" inputmode="numeric" autocomplete="one-time-code" required autofocus></label>
+  <button class="primary" type="submit">Turn on two-factor authentication</button></form>
+
+{% else %}
+  <p><span class="tag bad">off</span> Your account is protected by a password only.</p>
+  <p class="muted small">With an authenticator app, signing in needs your password and a six-digit code — and every TG11 application can then require that second factor too.</p>
+  <form method="post" action="/account/security/enable" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button class="primary" type="submit">Set up an authenticator app</button></form>
+{% endif %}
+<p class="muted small" style="margin-top:1rem"><a href="/account">Back to your account</a></p></div>
+{% endblock %}

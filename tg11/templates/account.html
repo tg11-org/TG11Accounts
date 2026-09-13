@@ -49,6 +49,10 @@
 </div>
 <p class="muted small" style="margin-top:.6rem">Wallet &amp; payment holds: <a href="/wallet">manage</a> · AI provider keys shared with your apps: <a href="/vault">manage</a></p></div>
 
+<div class="panel"><h2>Two-factor authentication</h2>
+<p class="muted small">An authenticator app on top of your password. Applications are told which factors you used, so they can require the second one.</p>
+<p><a class="btn primary" href="/account/security">Manage two-factor authentication</a></p></div>
+
 <div class="panel"><h2>Password</h2><form method="post" action="/account/password" class="row"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 {% if user.password_hash %}<label>Current <input name="current_password" type="password" autocomplete="current-password"></label>{% endif %}
 <label>New <input name="new_password" type="password" minlength="10" autocomplete="new-password"></label><label>Repeat <input name="new_password2" type="password" minlength="10" autocomplete="new-password"></label><button type="submit">Change</button></form></div>

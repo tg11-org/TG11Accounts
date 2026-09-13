@@ -88,6 +88,8 @@ across services.
 | --- | --- | --- |
 | `sub` | `openid` | **The TG11 UUID.** The only identifier to key on. |
 | `iss`, `aud`, `exp`, `iat`, `auth_time`, `nonce` | `openid` | validated on every login |
+| `amr` | `openid` | what was actually proved: `["pwd"]`, `["pwd","otp"]`, `["pwd","recovery"]` |
+| `acr` | `openid` | `urn:tg11:1fa` or `urn:tg11:2fa` |
 | `email`, `email_verified` | `email` | `email_verified` is what makes a one-time link safe |
 | `preferred_username`, `name`, `picture`, `website`, `updated_at` | `profile` | display only |
 | `phone_number`, `phone_number_verified` | `phone` | |
@@ -221,6 +223,29 @@ either side after an incident.
 
 ---
 
+## 5a. Second factors
+
+A TG11 account can carry a TOTP authenticator. What that changes:
+
+| | |
+| --- | --- |
+| Enrolling | `/account/security` → scan → confirm with a live code → ten recovery codes, shown once |
+| Signing in | password, then a six-digit code (or one recovery code) before any session exists |
+| Turning it off | password **and** a current code, so a borrowed session cannot strip it |
+| New recovery codes | password required; the previous set stops working |
+| What applications see | `amr: ["pwd","otp"]` and `acr: "urn:tg11:2fa"` in the ID token |
+| Asking for it | `acr_values=urn:tg11:2fa`, or `TG11_AUTH_REQUIRE_MFA = True` in the Django client |
+
+Half-finished logins hold nothing: the password step issues a signed,
+five-minute, single-purpose cookie that grants no access on its own, and the
+session is created only after the second factor. Failed codes are rate limited
+per account (5 per 5 minutes), and the accepted TOTP step is recorded so the
+same code cannot be used twice — including the one that enrolled the device.
+
+An application that requires MFA should also keep its own local second factor
+working, or make sure its users have enrolled at TG11 first; otherwise turning
+`TG11_AUTH_REQUIRE_MFA` on locks out everyone who has not.
+
 ## 6. Sessions and logout
 
 Each application keeps **its own** session cookie on its own host, with its own
@@ -310,13 +335,23 @@ backup.
 * TLS everywhere; `Secure` cookies; HSTS on the provider.
 * Passwords live only at the provider (`pbkdf2_sha256`, Django-compatible).
   Applications that adopt TG11 for a new account store an unusable password.
-* Provider is **MFA-ready** by design (TOTP, WebAuthn/passkeys, recovery codes,
-  trusted devices are schema-ready). When MFA lands, applications get it for
-  free: it happens at the provider, before the code is issued.
-* **Step-up authentication** for sensitive actions: send the user through
-  `/auth/tg11/login/?prompt=login` and check the resulting `auth_time`. This is
-  the mechanism FoxPay will use for payment-changing actions — the application
-  never handles a second factor itself.
+* **MFA is implemented** (0.3): TOTP in an authenticator app plus ten
+  single-use recovery codes. The shared secret is encrypted with the same
+  AES-256-GCM vault as the AI keys, AAD-bound to the user; a device only counts
+  once confirmed with a live code; codes are accepted within one 30-second step
+  either side and cannot be replayed; attempts are rate limited. WebAuthn and
+  passkeys will reuse the same `amr` plumbing when they land.
+* **Applications can require a second factor** without implementing one.
+  `acr_values=urn:tg11:2fa` on the authorization request makes the provider
+  re-authenticate until the session has one, and the resulting ID token reports
+  `amr`/`acr` so the application can verify rather than hope. In the Django
+  client that is one setting, `TG11_AUTH_REQUIRE_MFA = True`.
+* **Step-up authentication** for sensitive actions: `prompt=login` forces a
+  fresh sign-in, `max_age=<seconds>` forces one when the session is older than
+  that, and `auth_time` in the ID token lets the application check freshness
+  itself (`claims.authenticated_within(300)`). This is the mechanism FoxPay will
+  use for payment-changing actions — the application never handles a factor
+  itself.
 * **Audit logging:** log the event, never the material. `sub`, client id,
   application, outcome, `migration_source`, IP and user agent are fine. Tokens,
   codes, verifiers, secrets and password material are never logged, at any log

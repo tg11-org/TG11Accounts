@@ -126,6 +126,8 @@ def _start(request, mode: str) -> HttpResponse:
             flow,
             prompt=prompt if prompt in ALLOWED_PROMPTS else None,
             login_hint=request.GET.get("login_hint", "")[:254],
+            acr_values=conf.ACR_MFA if conf.require_mfa() else "",
+            max_age=conf.max_age(),
         )
     except OIDCError as exc:
         return _render_error(request, f"Could not reach TG11 right now ({exc}).", status=502)

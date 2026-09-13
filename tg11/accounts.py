@@ -82,8 +82,10 @@ def authenticate(db: Session, identifier: str, password: str) -> Optional[User]:
     return u
 
 
-def create_session(db: Session, user: User, ua: str = "", ip: str = "") -> UserSession:
-    s = UserSession(user_id=user.id, csrf_token=secrets.token_urlsafe(32), expires_at=utcnow() + timedelta(seconds=settings.TG11_SESSION_MAX_AGE), user_agent=ua[:255], ip_address=ip[:64])
+def create_session(db: Session, user: User, ua: str = "", ip: str = "", amr: str = "pwd") -> UserSession:
+    """`amr` records what was actually proved: "pwd", "pwd otp" or "pwd recovery".
+    It travels to applications in the ID token, so it must never be optimistic."""
+    s = UserSession(user_id=user.id, csrf_token=secrets.token_urlsafe(32), expires_at=utcnow() + timedelta(seconds=settings.TG11_SESSION_MAX_AGE), user_agent=ua[:255], ip_address=ip[:64], amr=amr or "pwd")
     db.add(s)
     db.flush()
     return s

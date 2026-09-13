@@ -45,6 +45,8 @@ class FakeIdP:
             "preferred_username": "newbie",
             "name": "New Person",
             "account_state": "active",
+            "amr": ["pwd"],
+            "acr": "urn:tg11:1fa",
         }
         self.userinfo: Optional[Dict[str, Any]] = None
         self.nonce_override: Optional[str] = None
@@ -63,6 +65,11 @@ class FakeIdP:
     def jwks(self) -> Dict[str, Any]:
         return KeySet([self.key] + self.extra_keys).as_dict(private=False)
 
+    def with_second_factor(self, method: str = "otp") -> None:
+        """Answer as a provider where the person used a second factor."""
+        self.claims["amr"] = ["pwd", method]
+        self.claims["acr"] = "urn:tg11:2fa"
+
     def rotate_key(self) -> None:
         """New signing key, old one no longer published - as a real rotation."""
         self.key = RSAKey.generate_key(2048, parameters={"kid": "k2"})
@@ -71,6 +78,7 @@ class FakeIdP:
     def id_token(self, nonce: str) -> str:
         now = int(time.time())
         claims = dict(self.claims)
+        claims.setdefault("auth_time", int(time.time()))
         claims.update({
             "iss": self.iss_override or self.issuer,
             "aud": self.aud_override if self.aud_override is not None else self.client_id,

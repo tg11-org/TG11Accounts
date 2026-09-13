@@ -3,4 +3,4 @@
 """TG11 Accounts - the OpenID Connect identity provider for the TG11 / VulpFin
 ecosystem (reference implementation, see docs/TG11_SSO.md in Flowboard)."""
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"

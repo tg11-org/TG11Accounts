@@ -1,0 +1,10 @@
+{% extends "base.html" %}{% block title %}Two-factor code · {{ site_name }}{% endblock %}{% block content %}
+<div class="panel"><h1>Enter your code</h1>
+<p class="muted small">Signing in as <strong>{{ username }}</strong>. Open your authenticator app and enter the current six-digit code.</p>
+{% if error %}<div class="flash bad">{{ error }}</div>{% endif %}
+<form method="post" action="/login/mfa" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="next" value="{{ next }}">
+<label>Six-digit code <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]*" required autofocus></label>
+<button class="primary" type="submit">Continue</button></form>
+<p class="muted small" style="margin-top:.8rem">Lost your device? Enter one of your recovery codes in the same box — each works once.</p>
+<p class="muted small"><a href="/login">Start over</a></p></div>
+{% endblock %}

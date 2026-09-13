@@ -98,6 +98,30 @@ Exceptions raised in the hook are logged, never fatal to a sign-in.
 | `TG11_AUTH_BASE_TEMPLATE` | `tg11_auth/_standalone.html` | your own base template |
 | `TG11_AUTH_FEDERATION_ID` | `""` | stamped on link rows (FurryParty etc.) |
 | `TG11_AUTH_ALLOW_LOCKOUT` | `False` | permit unlinking with no local password |
+| `TG11_AUTH_REQUIRE_MFA` | `False` | only accept sign-ins TG11 second-factored (asks for one with `acr_values`) |
+| `TG11_AUTH_MAX_AGE` | `None` | seconds; force re-authentication when the TG11 session is older |
+| `TG11_AUTH_LOGIN_GUARD` | `""` | dotted path to `(user, claims) -> None`; raise `AuthError` to refuse |
+
+## Second factors
+
+TG11 reports how the person authenticated:
+
+```python
+claims.amr                       # ["pwd"] or ["pwd", "otp"] / ["pwd", "recovery"]
+claims.acr                       # "urn:tg11:1fa" | "urn:tg11:2fa"
+claims.used_second_factor        # bool
+claims.authenticated_within(300) # for step-up decisions
+```
+
+`TG11_AUTH_REQUIRE_MFA = True` asks the provider for a second factor up front
+and refuses any sign-in that did not use one. For a per-account rule (say, only
+accounts that have 2FA here), use a `TG11_AUTH_LOGIN_GUARD`:
+
+```python
+def require_mfa_for_2fa_accounts(user, claims):
+    if TOTPDevice.objects.filter(user=user, verified=True).exists() and not claims.used_second_factor:
+        raise AuthError("This account uses two-factor authentication; sign in to TG11 with your code.")
+```
 
 ## Security properties worth keeping
 

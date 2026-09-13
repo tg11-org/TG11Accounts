@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from . import __version__, accounts, oidc
+from . import __version__, accounts, mfa, oidc
 from .config import settings
 from .models import ApplicationIdentityLink, Base, Consent, OAuthClient, Token, User, UserSession, engine, ensure_schema, get_db, utcnow
 
@@ -26,7 +26,11 @@ log = logging.getLogger("tg11")
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
 templates.env.globals.update(site_name=settings.TG11_SITE_NAME, issuer=settings.issuer, version=__version__, registration=settings.TG11_ALLOW_REGISTRATION)
 _signer = URLSafeTimedSerializer(settings.TG11_SECRET_KEY, salt="tg11-session")
-COOKIE, CSRF_COOKIE = "tg11_session", "tg11_csrf"
+#: a half-authenticated login: the password was right, the second factor is not
+#: in yet. It is signed, short-lived, and grants nothing on its own.
+_mfa_signer = URLSafeTimedSerializer(settings.TG11_SECRET_KEY, salt="tg11-mfa-pending")
+COOKIE, CSRF_COOKIE, MFA_COOKIE = "tg11_session", "tg11_csrf", "tg11_mfa"
+MFA_PENDING_MAX_AGE = 300  # seconds to finish the second step
 
 
 class LoginRequired(Exception):
@@ -191,7 +195,7 @@ def _authz_redirect(redirect_uri: str, params: dict, state: Optional[str]) -> Re
 
 
 @app.get("/oauth/authorize")
-def authorize(request: Request, response_type: str = "", client_id: str = "", redirect_uri: str = "", scope: str = "openid", state: Optional[str] = None, nonce: str = "", code_challenge: str = "", code_challenge_method: str = "", prompt: str = "", db: Session = Depends(get_db), user: Optional[User] = Depends(current_user_optional)):
+def authorize(request: Request, response_type: str = "", client_id: str = "", redirect_uri: str = "", scope: str = "openid", state: Optional[str] = None, nonce: str = "", code_challenge: str = "", code_challenge_method: str = "", prompt: str = "", max_age: Optional[int] = None, acr_values: str = "", db: Session = Depends(get_db), user: Optional[User] = Depends(current_user_optional)):
     client = oidc.get_client(db, client_id)
     if client is None:
         return render(request, "error.html", {"title": "Unknown client", "detail": "The application that sent you here is not registered with TG11 Accounts."}, 400)
@@ -210,16 +214,26 @@ def authorize(request: Request, response_type: str = "", client_id: str = "", re
     if not code_challenge and not client.client_secret_hash:
         return _authz_redirect(redirect_uri, {"error": "invalid_request", "error_description": "PKCE required for public clients"}, state)
     here = "/oauth/authorize?" + str(request.url.query)
-    if user is None or prompt == "login":
+    sess = getattr(request.state, "session", None) if user is not None else None
+    stale = False
+    if sess is not None and max_age is not None:
+        try:
+            stale = (utcnow() - sess.created_at).total_seconds() > max(0, int(max_age))
+        except (TypeError, ValueError):
+            stale = False
+    # an application asking for 2FA it cannot get is told, rather than handed a
+    # single-factor session it would have to reject itself
+    wants_mfa = oidc.ACR_MFA in (acr_values or "").split()
+    unmet_acr = bool(sess is not None and wants_mfa and not ({"otp", "recovery"} & set(sess.amr.split())))
+    if user is None or prompt == "login" or stale or unmet_acr:
         if prompt == "none":
-            return _authz_redirect(redirect_uri, {"error": "login_required"}, state)
-        return _redirect(f"/login?next={quote(here)}")
-    sess = request.state.session
+            return _authz_redirect(redirect_uri, {"error": "login_required" if not unmet_acr else "unmet_authentication_requirements"}, state)
+        return _redirect(f"/login?next={quote(here)}&reauth=1")
     if not oidc.has_consent(db, user, client, scopes):
         if prompt == "none":
             return _authz_redirect(redirect_uri, {"error": "consent_required"}, state)
         return render(request, "consent.html", {"client": client, "scopes": scopes, "query": str(request.url.query)})
-    code = oidc.issue_code(db, user, client, redirect_uri, scopes, nonce, code_challenge, code_challenge_method, sess.id)
+    code = oidc.issue_code(db, user, client, redirect_uri, scopes, nonce, code_challenge, code_challenge_method, sess.id, amr=sess.amr, auth_time=sess.created_at)
     return _authz_redirect(redirect_uri, {"code": code}, state)
 
 
@@ -265,7 +279,7 @@ async def token(request: Request, db: Session = Depends(get_db)):
         if user is None or not user.is_active:
             raise oidc.OAuthError("invalid_grant", "user inactive")
         scopes = code_row.scope.split()
-        return JSONResponse(oidc.token_response(db, user, client, scopes, code_row.nonce, code_row.auth_time, code_row.session_id, with_refresh="offline_access" in scopes), headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+        return JSONResponse(oidc.token_response(db, user, client, scopes, code_row.nonce, code_row.auth_time, code_row.session_id, with_refresh="offline_access" in scopes, amr=code_row.amr), headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
     if grant == "refresh_token":
         return JSONResponse(oidc.refresh(db, client, form.get("refresh_token", "")), headers={"Cache-Control": "no-store"})
     raise oidc.OAuthError("unsupported_grant_type", f"grant_type {grant} not supported")
@@ -324,15 +338,61 @@ def login_page(request: Request, next: str = "/account", user: Optional[User] = 
 
 @app.post("/login", dependencies=[Depends(csrf_protect)])
 def login_submit(request: Request, identifier: str = Form(...), password: str = Form(...), next: str = Form("/account"), db: Session = Depends(get_db)):
+    # A fresh sign-in always replaces the current session, so `prompt=login`
+    # and `max_age` really do re-authenticate rather than reuse what is there.
     user = accounts.authenticate(db, identifier, password)
     if user is None:
         return render(request, "login.html", {"next": _safe_next(next), "error": "Invalid email/username or password.", "identifier": identifier}, 401)
     if settings.TG11_REQUIRE_EMAIL_VERIFICATION and not user.email_verified:
         return render(request, "login.html", {"next": _safe_next(next), "error": "Please verify your email first (check your inbox).", "identifier": identifier}, 403)
-    sess = accounts.create_session(db, user, request.headers.get("user-agent", ""), request.client.host if request.client else "")
+    if mfa.has_mfa(db, user):
+        resp = _redirect(f"/login/mfa?next={quote(_safe_next(next))}")
+        resp.set_cookie(MFA_COOKIE, _mfa_signer.dumps(user.id), max_age=MFA_PENDING_MAX_AGE, httponly=True,
+                        secure=settings.TG11_COOKIE_SECURE and not settings.is_dev, samesite="lax", path="/")
+        return resp
+    sess = accounts.create_session(db, user, request.headers.get("user-agent", ""), request.client.host if request.client else "", amr="pwd")
     resp = _redirect(_safe_next(next))
     set_session(resp, sess.id)
     resp.delete_cookie(CSRF_COOKIE, path="/")
+    return resp
+
+
+def _pending_user(request: Request, db: Session) -> Optional[User]:
+    raw = request.cookies.get(MFA_COOKIE)
+    if not raw:
+        return None
+    try:
+        uid = _mfa_signer.loads(raw, max_age=MFA_PENDING_MAX_AGE)
+    except BadSignature:
+        return None
+    u = db.get(User, uid)
+    return u if (u is not None and u.is_active) else None
+
+
+@app.get("/login/mfa")
+def mfa_page(request: Request, next: str = "/account", db: Session = Depends(get_db)):
+    user = _pending_user(request, db)
+    if user is None:
+        return _redirect("/login?err=That+sign-in+expired.+Please+start+again.")
+    return render(request, "mfa.html", {"next": _safe_next(next), "username": user.username})
+
+
+@app.post("/login/mfa", dependencies=[Depends(csrf_protect)])
+def mfa_submit(request: Request, code: str = Form(""), next: str = Form("/account"), db: Session = Depends(get_db)):
+    user = _pending_user(request, db)
+    if user is None:
+        return _redirect("/login?err=That+sign-in+expired.+Please+start+again.")
+    try:
+        method = mfa.verify(db, user, code)
+    except mfa.MFAError as exc:
+        return render(request, "mfa.html", {"next": _safe_next(next), "username": user.username, "error": str(exc)}, 401)
+    user.last_login_at = utcnow()
+    sess = accounts.create_session(db, user, request.headers.get("user-agent", ""), request.client.host if request.client else "", amr=f"pwd {method}")
+    resp = _redirect(_safe_next(next))
+    set_session(resp, sess.id)
+    resp.delete_cookie(MFA_COOKIE, path="/")
+    resp.delete_cookie(CSRF_COOKIE, path="/")
+    log.info("tg11: signed in with a second factor (user=%s method=%s)", user.id, method)
     return resp
 
 
@@ -473,3 +533,82 @@ def logout(request: Request, db: Session = Depends(get_db)):
     resp = _redirect("/login?msg=Signed+out")
     resp.delete_cookie(COOKIE, path="/")
     return resp
+
+
+# --- two-factor authentication -------------------------------------------------
+
+@app.get("/account/security")
+def security_page(request: Request, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    device = mfa.device_for(db, user)
+    pending = mfa.device_for(db, user, confirmed_only=False) if device is None else None
+    return render(request, "security.html", {
+        "device": device,
+        "pending": pending is not None,
+        "codes_left": mfa.recovery_codes_left(db, user) if device is not None else 0,
+        "session_amr": (getattr(request.state, "session", None).amr if getattr(request.state, "session", None) else "pwd"),
+    })
+
+
+@app.post("/account/security/enable", dependencies=[Depends(csrf_protect)])
+def security_enable(request: Request, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Step one: show the secret. Nothing is enforced until it is confirmed."""
+    try:
+        _device, secret, uri = mfa.provision(db, user)
+    except mfa.MFAError as exc:
+        return render(request, "security.html", {"device": mfa.device_for(db, user), "error": str(exc)}, 400)
+    return render(request, "security.html", {
+        "device": None, "pending": True, "secret": secret, "otpauth": uri, "qr_svg": mfa.qr_svg(uri),
+    })
+
+
+@app.post("/account/security/confirm", dependencies=[Depends(csrf_protect)])
+def security_confirm(request: Request, code: str = Form(""), db: Session = Depends(get_db), user: User = Depends(current_user)):
+    try:
+        codes = mfa.confirm(db, user, code)
+    except mfa.MFAError as exc:
+        device = mfa.device_for(db, user, confirmed_only=False)
+        secret = None
+        uri = qr = None
+        if device is not None and device.confirmed_at is None:
+            secret = mfa._secret_of(device)
+            uri = mfa.otpauth_uri(user, secret)
+            qr = mfa.qr_svg(uri)
+        return render(request, "security.html", {"device": None, "pending": device is not None, "secret": secret,
+                                                 "otpauth": uri, "qr_svg": qr, "error": str(exc)}, 400)
+    # the session that just enabled it counts as two-factor from here on
+    sess = getattr(request.state, "session", None)
+    if sess is not None and "otp" not in sess.amr.split():
+        sess.amr = "pwd otp"
+    return render(request, "security.html", {"device": mfa.device_for(db, user), "codes": codes,
+                                             "codes_left": len(codes), "notice": "Two-factor authentication is on."})
+
+
+@app.post("/account/security/recovery", dependencies=[Depends(csrf_protect)])
+def security_recovery(request: Request, password: str = Form(""), db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """New recovery codes replace the old ones, so the password is required."""
+    if accounts.authenticate(db, user.email, password) is None:
+        return render(request, "security.html", {"device": mfa.device_for(db, user), "codes_left": mfa.recovery_codes_left(db, user),
+                                                 "error": "That password is not right."}, 403)
+    codes = mfa.regenerate_recovery_codes(db, user)
+    return render(request, "security.html", {"device": mfa.device_for(db, user), "codes": codes, "codes_left": len(codes),
+                                             "notice": "New recovery codes. The previous ones no longer work."})
+
+
+@app.post("/account/security/disable", dependencies=[Depends(csrf_protect)])
+def security_disable(request: Request, password: str = Form(""), code: str = Form(""), db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Turning a factor off needs the password *and* a current code - a borrowed
+    session must not be enough to strip someone's second factor."""
+    if accounts.authenticate(db, user.email, password) is None:
+        return render(request, "security.html", {"device": mfa.device_for(db, user), "codes_left": mfa.recovery_codes_left(db, user),
+                                                 "error": "That password is not right."}, 403)
+    if mfa.has_mfa(db, user):
+        try:
+            mfa.verify(db, user, code)
+        except mfa.MFAError as exc:
+            return render(request, "security.html", {"device": mfa.device_for(db, user), "codes_left": mfa.recovery_codes_left(db, user),
+                                                     "error": str(exc)}, 403)
+    mfa.disable(db, user)
+    sess = getattr(request.state, "session", None)
+    if sess is not None:
+        sess.amr = "pwd"
+    return render(request, "security.html", {"device": None, "notice": "Two-factor authentication is off."})

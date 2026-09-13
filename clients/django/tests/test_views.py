@@ -426,3 +426,58 @@ def test_broken_login_guard_fails_closed(client, idp, start_login, settings):
 
 def test_no_guard_configured_is_the_default(client, idp, start_login):
     assert _callback(client, start_login()).status_code == 302
+
+
+# ---- second factors ------------------------------------------------------
+def test_claims_carry_the_authentication_method(client, idp, start_login):
+    idp.with_second_factor()
+    _callback(client, start_login())
+    user = User.objects.get()
+    assert user.pk  # signed in
+    # and the single-factor case is distinguishable
+    link = TG11IdentityLink.objects.get()
+    assert link.subject == idp.claims["sub"]
+
+
+def test_require_mfa_refuses_a_single_factor_sign_in(client, idp, start_login, settings):
+    settings.TG11_AUTH_REQUIRE_MFA = True
+    resp = _callback(client, start_login())
+    assert resp.status_code == 403
+    assert b"two-factor" in resp.content
+    assert not User.objects.exists()
+    assert "_auth_user_id" not in client.session
+
+
+def test_require_mfa_accepts_a_second_factor(client, idp, start_login, settings):
+    settings.TG11_AUTH_REQUIRE_MFA = True
+    idp.with_second_factor()
+    resp = _callback(client, start_login())
+    assert resp.status_code == 302
+    assert User.objects.count() == 1
+
+
+def test_require_mfa_accepts_a_recovery_code(client, idp, start_login, settings):
+    settings.TG11_AUTH_REQUIRE_MFA = True
+    idp.with_second_factor("recovery")
+    assert _callback(client, start_login()).status_code == 302
+
+
+def test_require_mfa_asks_the_provider_for_it(client, idp, start_login, settings):
+    settings.TG11_AUTH_REQUIRE_MFA = True
+    q = start_login()["authorize"]
+    assert q["acr_values"] == "urn:tg11:2fa"
+
+
+def test_max_age_is_sent_when_configured(client, idp, start_login, settings):
+    settings.TG11_AUTH_MAX_AGE = 300
+    assert start_login()["authorize"]["max_age"] == "300"
+    settings.TG11_AUTH_MAX_AGE = None
+    assert "max_age" not in start_login()["authorize"]
+
+
+def test_step_up_freshness_is_checkable(client, idp, start_login):
+    import time as _t
+    from tg11_auth.client import Claims
+    assert Claims(subject="s", auth_time=int(_t.time())).authenticated_within(300)
+    assert not Claims(subject="s", auth_time=int(_t.time()) - 3600).authenticated_within(300)
+    assert not Claims(subject="s").authenticated_within(300)   # unknown is not fresh
