@@ -10,10 +10,10 @@ profile tables keyed on `users.id` (the OIDC `sub`).
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, create_engine, event
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from .config import settings
@@ -343,3 +343,52 @@ def get_db():
         raise
     finally:
         db.close()
+
+
+class Entitlement(Base):
+    """Something a person is entitled to, across one application or all of them.
+
+    `meta_json` may carry {"allowances": {"<key>": {"limit": int, "period": "day"}}}
+    to raise a quota; see tg11/entitlements.py."""
+
+    __tablename__ = "entitlements"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(48), nullable=False, index=True)   # supporter|ads_free|...
+    scope: Mapped[str] = mapped_column(String(64), default="all", nullable=False)  # all|app:<client_id>
+    tier: Mapped[str] = mapped_column(String(48), default="", nullable=False)
+    source: Mapped[str] = mapped_column(String(64), default="manual", nullable=False)  # manual|subscription:<id>|...
+    status: Mapped[str] = mapped_column(String(16), default="active", nullable=False)  # active|revoked
+    note: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    meta_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    granted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class AllowanceUsage(Base):
+    """How much of a refilling quota has been used in the current period."""
+
+    __tablename__ = "allowance_usage"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    key: Mapped[str] = mapped_column(String(80), nullable=False, index=True)  # flowboard.ai.requests
+    period: Mapped[str] = mapped_column(String(8), default="day", nullable=False)  # day|week|month
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    __table_args__ = (UniqueConstraint("user_id", "key", "period", "period_start", name="uq_allowance_period"),)
+
+
+class CreditLedger(Base):
+    """Every credit in and out. The balance is the sum of this table, so it
+    cannot drift away from its own history."""
+
+    __tablename__ = "credit_ledger"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    delta: Mapped[int] = mapped_column(Integer, nullable=False)  # + granted, - spent
+    reason: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    ref: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

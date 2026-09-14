@@ -1,0 +1,32 @@
+{% extends "base.html" %}{% block title %}Benefits{% endblock %}{% block content %}
+<div class="panel"><h1>Benefits and credits</h1>
+<p class="muted">What your account is entitled to across TG11 services, and what you have left this period.</p>
+
+<h2>Entitlements</h2>
+<table><tr><th>What</th><th>Where</th><th>Tier</th><th>Until</th><th>From</th></tr>
+{% for r in rows %}<tr>
+  <td>{{ r.kind }}</td>
+  <td>{% if r.scope == 'all' %}<span class="tag ok">all TG11 services</span>{% else %}{{ clients[r.scope[4:]].name if r.scope[4:] in clients else r.scope }}{% endif %}</td>
+  <td class="small">{{ r.tier or '—' }}</td>
+  <td class="small">{{ r.expires_at.strftime('%Y-%m-%d') if r.expires_at else 'no expiry' }}</td>
+  <td class="small muted">{{ r.source }}</td>
+</tr>{% else %}<tr><td colspan="5" class="muted">Nothing yet. Everyone gets the free allowances below.</td></tr>{% endfor %}</table></div>
+
+<div class="panel"><h2>Allowances</h2>
+<table><tr><th>What</th><th>Used</th><th>Limit</th><th>Resets</th></tr>
+{% for a in allowances %}<tr>
+  <td class="small">{{ a.key }}</td>
+  <td>{{ a.used }}</td>
+  <td>{{ a.limit }}{% if a.limit == 0 %} <span class="muted small">(not available on your plan)</span>{% endif %}</td>
+  <td class="small">{{ a.resets_at }} <span class="muted">({{ a.period }})</span></td>
+</tr>{% else %}<tr><td colspan="4" class="muted">No metered features yet.</td></tr>{% endfor %}</table></div>
+
+<div class="panel"><h2>Credits <span class="tag {{ 'ok' if credits else '' }}">{{ credits }}</span></h2>
+<p class="muted small">Credits are spent only when an allowance runs out.</p>
+<table><tr><th>When</th><th>Change</th><th>Why</th></tr>
+{% for e in ledger %}<tr>
+  <td class="small">{{ e.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+  <td>{{ '+' if e.delta > 0 else '' }}{{ e.delta }}</td>
+  <td class="small muted">{{ e.reason }}{% if e.ref %} · {{ e.ref }}{% endif %}</td>
+</tr>{% else %}<tr><td colspan="3" class="muted">No credit activity.</td></tr>{% endfor %}</table></div>
+{% endblock %}

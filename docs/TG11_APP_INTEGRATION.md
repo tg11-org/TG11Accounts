@@ -333,3 +333,42 @@ One application per session, each ending deployed, verified and documented.
 [ ] row counts match expectations; existing accounts still sign in as before
 [ ] rollback tested or written down precisely
 ```
+
+## Entitlements, allowances and credits
+
+TG11 Accounts is the one place that knows what a person is entitled to across
+every application, so no application grows its own billing table.
+
+* An **entitlement** is a durable grant (`supporter`, `ads_free`), scoped to
+  everything (`all`) or to one application (`app:flowboard`), optionally with an
+  expiry. Ask for the `tg11.entitlements` scope and they arrive in the ID token
+  as `["supporter:all", "ads_free:app:flowboard"]`.
+* An **allowance** is a quota that refills on a clock — 20 assistant requests a
+  day. Free limits live in `DEFAULT_ALLOWANCES` in code, so everyone has them
+  without a row existing; an entitlement raises them.
+* **Credits** are a purchased balance, spent only once an allowance is exhausted.
+  The balance is the sum of a ledger, never a column.
+
+Two endpoints, both requiring the user to have granted `tg11.entitlements`:
+
+```http
+GET  /api/v1/entitlements/{sub}?keys=flowboard.ai.requests     # client basic auth
+POST /api/v1/entitlements/consume                              # client basic auth
+     {"sub": "...", "key": "flowboard.ai.requests", "amount": 1, "allow_credits": true}
+```
+
+`consume` is all or nothing: a request that cannot be paid for in full changes
+nothing, so a caller never has to unpick a partial debit. It answers `402` when
+it refuses, with `remaining`, `resets_at` and `credit_balance` so the
+application can say something useful to the person.
+
+Operators grant by hand until something sells them:
+
+```bash
+python -m tg11.cli entitlement-grant --user alice --kind supporter \
+    --scope app:flowboard --days 30 --allowance flowboard.ai.requests=50/day
+python -m tg11.cli credits-add --user alice --amount 1000 --reason "one-time"
+python -m tg11.cli entitlement-list --user alice
+```
+
+A person sees all of it at `/benefits`.

@@ -29,7 +29,7 @@ from .tokens import generate_token, hash_token
 ACR_SINGLE = "urn:tg11:1fa"
 ACR_MFA = "urn:tg11:2fa"
 
-SUPPORTED_SCOPES = ["openid", "profile", "email", "phone", "tg11.profile", "tg11.ai", "tg11.payments", "offline_access"]
+SUPPORTED_SCOPES = ["openid", "profile", "email", "phone", "tg11.profile", "tg11.ai", "tg11.payments", "tg11.entitlements", "offline_access"]
 
 
 class OAuthError(Exception):
@@ -213,6 +213,17 @@ def user_claims(user: User, scopes: List[str]) -> Dict:
         claims["tg11_bio"] = user.bio or None
         claims["tg11_header_image"] = user.header_url or None
         claims["account_state"] = user.state
+    if "tg11.entitlements" in scopes:
+        from . import entitlements as _ent
+        from .models import SessionLocal as _SessionLocal
+
+        db = _SessionLocal()
+        try:
+            claims["entitlements"] = _ent.as_claims(db, user)
+        except Exception:  # an entitlement lookup must never break a sign-in
+            claims["entitlements"] = []
+        finally:
+            db.close()
         claims["created_at"] = user.created_at.isoformat() + "Z"
     return {k: v for k, v in claims.items() if v is not None}
 

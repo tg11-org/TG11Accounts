@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import accounts, oidc, payments, sms, vault
+from . import accounts, entitlements, oidc, payments, sms, vault
 from .config import settings
 from .models import ApplicationIdentityLink, Consent, OAuthClient, PaymentHold, Token, User, get_db, utcnow
 from .tokens import hash_token
@@ -260,6 +260,18 @@ def wallet_remove(method_id: str, db: Session = Depends(get_db), user: User = De
     return redirect("/wallet?msg=Payment+method+removed")
 
 
+@router.get("/benefits")
+def benefits_page(request: Request, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    clients = {c.client_id: c for c in db.scalars(select(OAuthClient))}
+    return render(request, "benefits.html", {
+        "rows": entitlements.active(db, user, any_scope=True),
+        "clients": clients,
+        "credits": entitlements.balance(db, user),
+        "ledger": entitlements.ledger(db, user, 20),
+        "allowances": [entitlements.allowance_status(db, user, k, any_scope=True) for k in sorted(entitlements.DEFAULT_ALLOWANCES)],
+    })
+
+
 # --- AI key vault ----------------------------------------------------------------------
 
 @router.get("/vault")
@@ -385,6 +397,58 @@ async def api_register_link(request: Request, db: Session = Depends(get_db)):
     row.user_id, row.local_uuid, row.migration_source, row.migration_status = user.id, str(body.get("local_uuid", ""))[:36], str(body.get("source", "oidc_login"))[:32], "linked"
     db.flush()
     return JSONResponse({"ok": True, "link_id": row.id})
+
+
+def _keys_param(request: Request):
+    raw = (request.query_params.get("keys") or "").strip()
+    return [k for k in (s.strip() for s in raw.split(",")) if k] or None
+
+
+@router.get("/api/v1/entitlements")
+def api_entitlements(request: Request, db: Session = Depends(get_db)):
+    """What the signed-in person is entitled to, from the calling application's
+    point of view: its own grants plus the ones that apply everywhere."""
+    user, _tok, client = _bearer_user(request, db, "tg11.entitlements")
+    application = client.application if client is not None else None
+    return JSONResponse(entitlements.summary(db, user, application, _keys_param(request)))
+
+
+@router.get("/api/v1/entitlements/{sub}")
+def api_entitlements_for(request: Request, sub: str, db: Session = Depends(get_db)):
+    """The same answer for a backend holding client credentials rather than a
+    user token - what Flowboard asks before it spends anything."""
+    client = _client_from_basic(request, db)
+    user = db.get(User, sub)
+    if user is None:
+        raise oidc.OAuthError("invalid_request", "unknown sub", 404)
+    if not _consented(db, user, client, "tg11.entitlements"):
+        raise oidc.OAuthError("access_denied", "user has not granted tg11.entitlements to this application", 403)
+    return JSONResponse(entitlements.summary(db, user, client.application, _keys_param(request)))
+
+
+@router.post("/api/v1/entitlements/consume")
+async def api_entitlements_consume(request: Request, db: Session = Depends(get_db)):
+    """Spend an allowance (falling back to credits). All or nothing: a request
+    that cannot be paid for in full changes nothing."""
+    client = _client_from_basic(request, db)
+    body = await request.json()
+    user = db.get(User, str(body.get("sub", "")))
+    if user is None:
+        raise oidc.OAuthError("invalid_request", "unknown sub", 404)
+    if not _consented(db, user, client, "tg11.entitlements"):
+        raise oidc.OAuthError("access_denied", "user has not granted tg11.entitlements to this application", 403)
+    key = str(body.get("key", "")).strip()
+    if not key:
+        raise oidc.OAuthError("invalid_request", "key is required")
+    try:
+        result = entitlements.consume(
+            db, user, key, int(body.get("amount", 1)), application=client.application,
+            allow_credits=bool(body.get("allow_credits", True)),
+            reason=str(body.get("reason", ""))[:120],
+        )
+    except entitlements.EntitlementError as exc:
+        raise oidc.OAuthError("invalid_request", str(exc))
+    return JSONResponse(result, status_code=200 if result["allowed"] else 402)
 
 
 @router.post("/api/v1/payments/holds")
